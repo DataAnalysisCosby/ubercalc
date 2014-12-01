@@ -23,5 +23,6 @@ struct map {
 
 void **map_get(struct map *, void *);
 int map_exists(struct map *, void *);
+void map_copy(struct map *, struct map *);
 
 #endif

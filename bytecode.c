@@ -69,3 +69,34 @@ code_symtab(struct progm *prog, symtab *imm)
 	prog->code[prog->len].symtab = imm;
 	return prog->len++;
 }
+
+#if 0
+static struct {
+	char *opcode, *args;
+} opcodes[] = {
+	[Add2_opcode] = { "add2", "" },
+	[Add_imm_si_opcode] = { "add", "d" },
+	[Alloc_list_opcode] = { "alloc_list", "" },
+	[Alloc_stack_opcode] = { "alloc_stack" , "" },
+	[Call_opcode] = { "call", "" },
+	[Call_imm_func_opcode] = { "call", "f" },
+	[Call_imm_local_opcode] = { "call", "l" },
+	[Call_imm_nonlocal_opcode] = { "call", "n" },
+	[Call_imm_sym_opcode] = { "call", "s" },
+	[Car_opcode] = { "car" , "" },
+	[Cdr_opcode] = { "cdr" , "" },
+	[Clear_opcode] = { "clear", "" },
+	[Div2_opcode] = { "div2", "" },
+	[Div_imm_si_opcode] = { "div", "d" },
+	[Drop_opcode] = { "drop", "" },
+	[Dup_opcode] = { "dup", "" },
+	[Halt_opcode] = { "halt", "" },
+	[Jmp_opcode] = { "jmp", "d" },
+	[Jmp_abs_opcode] = { "jmp_abs", "o" },
+	[Jmp_eq_opcode] = { "jmp_eq", "d" },
+	[Jmp_ne_opcode] = { "jmp_ne", "d" },
+	[Lambda_opcode] = { "lambda", "" },
+	[Let_opcode] = { "let", "t" },
+	[Load_opcode] = { "load", "" },
+};
+#endif

@@ -26,6 +26,8 @@
  *      f       - 32-bit float
  *      func    - pointer to a struct func.
  *      symtab  - pointer to a symbol table.
+ *
+ * These suffixes are inconsistent and must be made consistent.
  */
 
 enum opcode {
@@ -55,6 +57,11 @@ enum opcode {
 	Call_imm_nonlocal_opcode,
 	Call_imm_sym_opcode,
 
+	Car_opcode,
+	Cdr_opcode,
+
+	Clear_opcode,
+
 	Div2_opcode,
 	/*
 	DivN_opcode,
@@ -76,8 +83,13 @@ enum opcode {
 	 * All branch instructions have at least one argument that specifies the
 	 * offset of the jump. This immediate is always the first supplied and
 	 * is a signed integer.
+	 *
+	 * Beware of Jmp_abs! Bytecode addresses are context dependent. That is
+	 * to say, a function's bytecode address 0 is different from a disparate
+	 * function's bytecode address 0.
 	 */
 	Jmp_opcode,     /* Unconditional jump. */
+	Jmp_abs_opcode,
 	Jmp_eq_opcode,
 	Jmp_eq_imm_si_opcode,
 	Jmp_eq_imm_ui_opcode,
@@ -93,7 +105,7 @@ enum opcode {
 	Jmp_ne_imm_ui_opcode,
 	Jmp_true_opcode,
 
-	Lambda_opcode,
+	Lambda_opcode,  /* Possibly useless? */
 
 	/*
 	 * Let requires a symbol table as its only argument.
@@ -124,6 +136,7 @@ enum opcode {
 	Push_imm_br_opcode,
 	Push_imm_f_opcode,
 	*/
+	Push_imm_func_opcode,
 	Push_imm_si_opcode,
 //	Push_imm_sym_opcode,
 	/*

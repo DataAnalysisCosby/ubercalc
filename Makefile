@@ -1,4 +1,4 @@
-CFLAGS = -c -Wall -g3
+CFLAGS = -c -Wall -g3 -O3
 LDFLAGS = -ledit -ltermcap
 SRCS = map.c lex.c parse.c builtin.c ident.c list.c comp.c eval.c main.c \
 	bytecode.c symtab.c strmap.c

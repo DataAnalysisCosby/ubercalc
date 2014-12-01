@@ -19,13 +19,6 @@ enum type {
 	List_type,
 	Slice_type,
 	Function_type,
-	/*
-	 * Local types add an offset to the base pointer to get their address
-	 * while non locals subtract from it.
-	Local_type,
-	Non_local_type,
-	Captured_type,
-	*/
 };
 
 static inline const char *

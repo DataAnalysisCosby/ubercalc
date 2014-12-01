@@ -37,18 +37,32 @@ nonlocal(struct func *env, size_t walk, size_t offset)
 		: local(env, offset);
 }
 
+static inline struct func *
+find_nearest_descendent(struct func *env, struct func *child)
+{
+	while (child != NULL && child->parent != env)
+		child = child->parent;
+	return child;
+}
+
 void
 eval(struct func *env, struct progm *prog)
 {
 	size_t walk, offset;
-	struct context local_context;
-//	struct list *l;
+	size_t ignored_walks;
 	struct func local_func;
 	struct progm local_prog = *prog;
+	struct context local_context;
 	struct value *a1, a2;
 
 	if (env->rt_context != NULL)
 		stackp = env->rt_context->local_end;
+
+	/*
+	 * When we create a new scope with no new variables, we speed up things
+	 * slightly by ignoring those walks.
+	 */
+	ignored_walks = 0;
 
 	/*
 	 * TODO: type checking. Either here or in the compiler.
@@ -71,12 +85,24 @@ eval(struct func *env, struct progm *prog)
 			fprintf(stderr, "unsupported instruction\n");
 			abort();
 
-		case Call_imm_func_opcode:
+		case Call_opcode:
 		{
 			size_t nargs;
 			size_t req_args;
 			struct func *call;
+			struct func *descendent;
+			struct value popped;
 
+			nargs = NEXT_IMM_OFFSET(local_prog);
+			popped = POP();
+			if (popped.type != Function_type) {
+				fprintf(stderr, "type error: not function\n");
+				abort();
+			}
+			call = popped.f;
+			goto call_func;
+
+		case Call_imm_func_opcode:
 			nargs = NEXT_IMM_OFFSET(local_prog);
 			call = NEXT_IMM_FUNC(local_prog);
 			goto call_func;
@@ -88,7 +114,7 @@ eval(struct func *env, struct progm *prog)
 
 		case Call_imm_nonlocal_opcode:
 			nargs = NEXT_IMM_OFFSET(local_prog);
-			walk = NEXT_IMM_OFFSET(local_prog);
+			walk = NEXT_IMM_OFFSET(local_prog) - ignored_walks;
 			offset = NEXT_IMM_OFFSET(local_prog);
 			call = nonlocal(env, walk, offset)->f;
 			goto call_func;
@@ -132,7 +158,60 @@ eval(struct func *env, struct progm *prog)
 			eval(call, &call->prog);
 			call->prog.ip = 0;
 
-			*call->rt_context->local_start = *TOP();
+			a2 = *TOP();
+
+			/*
+			 * Determine if we need to make the returned value a
+			 * closure.
+			 * TODO: factor this, it's repeated in a couple of
+			 * different places.
+			 */
+			if (a2.type == Function_type &&
+			    (descendent = find_nearest_descendent(call, a2.f))
+			    != NULL) {
+				struct value *p;
+				struct func *new_func;
+
+				/*
+				 * We need to make the value a closure.
+				 * TODO: figure out what assumptions we can make 
+				 * to speed this up.
+				 * TODO: error checking.
+				 */
+				a2.f->flags.closure = 1;
+				new_func = malloc(sizeof(struct func));
+				*new_func = *call;
+				new_func->rt_context =
+					malloc(sizeof(struct context));
+				new_func->rt_context->local_start =
+					malloc(sizeof(struct value) *
+					       new_func->locals->len);
+				new_func->rt_context->local_end =
+					new_func->rt_context->local_start;
+				for (p = call->rt_context->local_start;
+				     p < call->rt_context->local_end;
+				     p++) {
+					/*
+					 * TODO: figure out what to copy and
+					 * what to duplicate.
+					 */
+					*new_func->rt_context->local_end = *p;
+					new_func->rt_context->local_end++;
+				}
+				new_func->flags.closure = 1;
+				if (descendent == a2.f) {
+					/* Copy the descendent */
+					descendent =
+						malloc(sizeof(struct func));
+					*descendent = *a2.f;
+					descendent->rt_context = NULL;
+					a2.f = descendent;
+				}
+				descendent->parent = new_func;
+			}
+
+
+			*call->rt_context->local_start = a2;
 			stackp = call->rt_context->local_start + 1;
 
 			if (call->rt_context == &local_context)
@@ -141,6 +220,13 @@ eval(struct func *env, struct progm *prog)
 				*call->rt_context = local_context;
 			break;
 		}
+
+		case Clear_opcode:
+			stackp = (env->rt_context != NULL)
+				? env->rt_context->local_end
+				: &stack[0];
+			break;
+
 
 		case Div2_opcode:
 		case Div_imm_si_opcode:
@@ -174,14 +260,20 @@ eval(struct func *env, struct progm *prog)
 		case Jmp_lt_opcode:
 		case Jmp_lt_imm_si_opcode:
 		case Jmp_lt_imm_ui_opcode:
+			fprintf(stderr, "unsupported instruction\n");
+			abort();
+
 		case Jmp_ne_opcode:
+		{
+			struct value a1;
+
 			a2 = POP();
-			a1 = TOP();
-			(void)POP();
-			if (a1->i != a2.i)
+			a1 = POP();
+			if (a1.i != a2.i)
 				goto jmp;
 			(void)NEXT_IMM_OFFSET(local_prog);
 			break;
+		}
 
 		case Jmp_ne_imm_si_opcode:
 		case Jmp_ne_imm_ui_opcode:
@@ -200,6 +292,10 @@ eval(struct func *env, struct progm *prog)
 			local_prog.ip += local_prog.code[local_prog.ip].si + 1;
 			break;
 
+		case Jmp_abs_opcode:
+			local_prog.ip = local_prog.code[local_prog.ip].si;
+			break;
+
 		case Lambda_opcode:
 			fprintf(stderr, "unsupported instruction\n");
 			abort();
@@ -214,11 +310,16 @@ eval(struct func *env, struct progm *prog)
 			local_func.locals = locals;
 			local_func.rt_context = &local_context;
 			local_context.local_start = stackp;
-			if (locals != NULL)
+			if (locals == NULL) {
+				/* Ignore this walk. */
+				ignored_walks++;
+				local_context.local_end = stackp;
+			} else {
 				stackp += locals->len;
-			local_context.local_end = stackp;
-
-			eval(&local_func, &local_prog);
+				local_context.local_end = stackp;
+				/* Recurse if we are not ignoring this walk. */
+				eval(&local_func, &local_prog);
+			}
 			break;
 		}
 
@@ -232,7 +333,7 @@ eval(struct func *env, struct progm *prog)
 			break;
 
 		case Load_imm_nonlocal_opcode:
-			walk = NEXT_IMM_OFFSET(local_prog);
+			walk = NEXT_IMM_OFFSET(local_prog) - ignored_walks;
 			offset = NEXT_IMM_OFFSET(local_prog);
 			a1 = nonlocal(env, walk, offset);
 			PUSH(*a1);
@@ -255,6 +356,12 @@ eval(struct func *env, struct progm *prog)
 		case Mul_imm_si_opcode:
 			a1 = TOP();
 			a1->i *= NEXT_IMM_SI(local_prog);
+			break;
+
+		case Push_imm_func_opcode:
+			a2.type = Function_type;
+			a2.f = NEXT_IMM_FUNC(local_prog);
+			PUSH(a2);
 			break;
 
 		case Push_imm_si_opcode:
@@ -290,17 +397,68 @@ eval(struct func *env, struct progm *prog)
 		}
 
 		case Sto_imm_nonlocal_opcode:
-			walk = NEXT_IMM_OFFSET(local_prog);
+		{
+			struct func *descendent;
+
+			walk = NEXT_IMM_OFFSET(local_prog) - ignored_walks;
 			offset = NEXT_IMM_OFFSET(local_prog);
 			a1 = nonlocal(env, walk, offset);
-			*a1 = POP();
+			a2 = POP();
+
+			if (a2.type == Function_type &&
+			    (descendent = find_nearest_descendent(env, a2.f))
+			    != NULL) {
+				struct value *p;
+				struct func *new_func;
+
+				/*
+				 * We need to make the value a closure.
+				 * TODO: figure out what assumptions we can make 
+				 * to speed this up.
+				 * TODO: error checking.
+				 */
+				a2.f->flags.closure = 1;
+				new_func = malloc(sizeof(struct func));
+				*new_func = *env;
+				new_func->rt_context =
+					malloc(sizeof(struct context));
+				new_func->rt_context->local_start =
+					malloc(sizeof(struct value) *
+					       new_func->locals->len);
+				new_func->rt_context->local_end =
+					new_func->rt_context->local_start;
+				for (p = env->rt_context->local_start;
+				     p < env->rt_context->local_end;
+				     p++) {
+					/*
+					 * TODO: figure out what to copy and
+					 * what to duplicate.
+					 */
+					*new_func->rt_context->local_end = *p;
+					new_func->rt_context->local_end++;
+				}
+				new_func->flags.closure = 1;
+				if (descendent == a2.f) {
+					/* Copy the descendent */
+					descendent =
+						malloc(sizeof(struct func));
+					*descendent = *a2.f;
+					descendent->rt_context = NULL;
+					a2.f = descendent;
+				}
+
+				descendent->parent = new_func;
+			}
+
+			*a1 = a2;
 			break;
+		}
 
 		case Sto_imm_nonlocal_func_opcode:
 		{
 			struct func *f;
 
-			walk = NEXT_IMM_OFFSET(local_prog);
+			walk = NEXT_IMM_OFFSET(local_prog) - ignored_walks;
 			offset = NEXT_IMM_OFFSET(local_prog);
 			a1 = nonlocal(env, walk, offset);
 			f = NEXT_IMM_FUNC(local_prog);
@@ -321,8 +479,18 @@ eval(struct func *env, struct progm *prog)
 			break;
 
 		case Yield_opcode:
-			*prog = local_prog;
-			return;
+			if (ignored_walks == 0) {
+				*prog = local_prog;
+				return;
+			}
+
+			/*
+			 * Otherwise, we have have ignored walks we need to
+			 * remove.
+			 */
+			ignored_walks--;
+//			env = env->parent;
+			break;
 
 		default:
 			fprintf(stderr, "unsupported!!\n");

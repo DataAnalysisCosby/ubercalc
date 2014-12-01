@@ -1,6 +1,8 @@
 #ifndef _SYMTAB_H_
 #define _SYMTAB_H_
 
+#include <stdlib.h>
+
 #include "map.h"
 
 typedef struct map symtab;
@@ -43,6 +45,12 @@ sym_add(symtab *p, size_t sym)
 	size_t offset = p->len;
 	*map_get((struct map *)p, (void *)sym) = (void *)offset;
 	return offset;
+}
+
+static inline void
+symtab_copy(symtab *src, symtab *dst)
+{
+	map_copy((struct map *)src, (struct map *)dst);
 }
 
 #endif

@@ -18,7 +18,6 @@ enum builtin {
 	Let_builtin,
 	List_builtin,
 	Mul_builtin,
-	NOP_builtin,
 	Quote_builtin,
 	Set_builtin,
 	Sub_builtin,

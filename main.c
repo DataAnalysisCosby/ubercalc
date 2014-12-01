@@ -42,7 +42,7 @@ get_next_token(void)
 		break;
 
 	default:
-		fprintf(stderr, "Lexing error?\n");
+//		fprintf(stderr, "Lexing error?\n");
 		break;
 	}
 	return tok;

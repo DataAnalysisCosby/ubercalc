@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <stdbool.h>
 
 #include "types.h"
 #include "symtab.h"
@@ -6,10 +7,22 @@
 #include "bytecode.h"
 
 /*
+ * Some initial commentary on this file:
+ * All of the compilation work I've done has started as a big mess and remained
+ * that way. This file is really no different, but I plan on fixing that at some
+ * point.
+ * I don't believe most optimizations should be put in here, I'm thinking of
+ * adding an "opt" file that does most of the heavy lifting.
+ * However, optimizations that are required - such as tail calls - should be
+ * placed in here.
+ */
+
+/*
  * Information only useful for compiling; also keeps a singular record of the
  * allocated func data.
  */
 static struct scope {
+	size_t          func_sym;       /* For tail call opts. */
 	symtab          *locals;
 	struct list     *local_funcs;
 	struct func     *fdat;
@@ -23,29 +36,27 @@ struct var_loc {
 };
 
 /*
- * I kind of hate that this allocates memory, it clearly shouldn't have to.
- * Will fix.
+ * Finds the variable. If no variable was found, the scope is set to NULL.
  */
-static struct var_loc *
+static struct var_loc
 find_var_loc(struct scope *curr, size_t sym)
 {
 	size_t walk;
-	struct var_loc *var;
+	struct var_loc var = { 0, 0, NULL };
 
 	walk = 0;
 	while (curr != NULL) {
 		if (sym_exists(curr->locals, sym)) {
-			var = malloc(sizeof (struct var_loc));
-			var->walk = walk;
-			var->scope = curr;
-			var->offset = sym_offset(curr->locals, sym);
+			var.walk = walk;
+			var.scope = curr;
+			var.offset = sym_offset(curr->locals, sym);
 			return var;
 		}
 		walk++;
 		curr = curr->parent;
 	}
 
-	return NULL;
+	return var;
 }
 
 
@@ -58,24 +69,26 @@ set_compiler_global_context(struct func *env)
 }
 
 /*
-        Call graphs are for wusses and lesser wimps!
+        Only big wusses and lesser wimps use [call graphs].
                                                 -Strong Bad
  */
 
-enum type compile_list(struct scope *, struct progm *, struct list *);
+enum type compile_list(struct scope *, struct progm *, struct list *, bool);
 enum type compile_builtin(struct scope *, struct progm *, struct list *,
-			  enum builtin);
-enum type compile_if(struct scope *, struct progm *, struct list *);
-enum type compile_funcall(struct scope *, struct progm *, struct list *);
-enum type compile_item(struct scope *, struct progm *, struct value *);
+			  enum builtin, bool);
+enum type compile_if(struct scope *, struct progm *, struct list *, bool);
+enum type compile_set(struct scope *, struct progm *, struct list *);
+enum type compile_funcall(struct scope *, struct progm *, struct list *, bool);
+enum type compile_item(struct scope *, struct progm *, struct value *, bool);
 enum type compile_define(struct scope *, struct progm *, struct list *);
+enum type compile_lambda(struct scope *, struct progm *, struct list *);
 enum type compile_var_def(struct scope *, struct progm *, struct list *);
 enum type compile_func_def(struct scope *, struct progm *, struct list *);
 
 enum type
 compile(struct progm *prog, struct list *lp)
 {
-	return compile_list(&global, prog, lp);
+	return compile_list(&global, prog, lp, false);
 }
 
 /*
@@ -83,7 +96,8 @@ compile(struct progm *prog, struct list *lp)
  * run. The value returned is the inferred type of the expression.
  */
 enum type
-compile_list(struct scope *env, struct progm *prog, struct list *lp)
+compile_list(struct scope *env, struct progm *prog, struct list *lp,
+	     bool tailcall)
 {
 	if (lp->len == 0)
 		return Error_type; /* I don't know what to do here. */
@@ -100,25 +114,25 @@ compile_list(struct scope *env, struct progm *prog, struct list *lp)
 
 	case Symbol_type:
 		return ((lp->items->sym < Num_builtins)
-			? compile_builtin(env, prog, lp, lp->items->sym)
-			: compile_funcall(env, prog, lp));
+			? compile_builtin(env, prog, lp, lp->items->sym,
+					  tailcall)
+			: compile_funcall(env, prog, lp, tailcall));
 
 	default:
-		return Error_type;
+		return compile_funcall(env, prog, lp, tailcall);
 	}
 }
 
 enum type
 compile_builtin(struct scope *env, struct progm *prog, struct list *lp,
-		enum builtin sym)
+		enum builtin sym, bool tailcall)
 {
 	size_t i;
-	enum type argt;
-	enum opcode mtab[] = {
-		[Add_builtin] = Add2_opcode,
-		[Sub_builtin] = Sub2_opcode,
-		[Mul_builtin] = Mul2_opcode,
-		[Div_builtin] = Div2_opcode,
+	enum opcode mtab[][2] = {
+		[Add_builtin] = { Add2_opcode, Add_imm_si_opcode },
+		[Sub_builtin] = { Sub2_opcode, Sub_imm_si_opcode },
+		[Mul_builtin] = { Mul2_opcode, Mul_imm_si_opcode },
+		[Div_builtin] = { Div2_opcode, Div_imm_si_opcode },
 	};
 
 	switch (sym) {
@@ -132,36 +146,50 @@ compile_builtin(struct scope *env, struct progm *prog, struct list *lp,
 			 */
 			return Error_type;
 		}
-		for (i = 1; i < lp->len; i++) {
-			/* TODO: check to make sure types are correct. */
-			if ((argt = compile_item(env, prog, lp->items + i))
-			    == Error_type)
-				return Error_type;
-			if (i > 1)
-				code_inst(prog, mtab[sym]);
-		}
+		/* Compile the first item. */
+		if (compile_item(env, prog, lp->items + 1, false) == Error_type)
+			return Error_type;
+		for (i = 2; i < lp->len; i++)
+			switch (lp->items[i].type) {
+			case Integer_type:
+				code_inst(prog, mtab[sym][1]);
+				code_si(prog, lp->items[i].i);
+				break;
+
+			default:
+				if (compile_item(env, prog, lp->items + i, false)
+				    == Error_type)
+					return Error_type;
+				code_inst(prog, mtab[sym][0]);
+				break;
+			}
 		return Integer_type;
 
 	case Define_builtin:
 		return compile_define(env, prog, lp);
 
 	case If_builtin:
-		return compile_if(env, prog, lp);
+		return compile_if(env, prog, lp, tailcall);
 
 	case Set_builtin:
-//		return compile_set(env, prog, lp);
-		/* ... */
+		return compile_set(env, prog, lp);
+
+	case Lambda_builtin:
+		return compile_lambda(env, prog, lp);
+
 	default:
 		return Error_type;
 	}
 }
 
 enum type
-compile_if(struct scope *env, struct progm *prog, struct list *lp)
+compile_if(struct scope *env, struct progm *prog, struct list *lp,
+	   bool tailcall)
 {
 	enum type ret_type;
-	struct var_loc *loc;
+	struct var_loc loc;
 	struct scope scope = {
+		.func_sym = 0,
 		.fdat = NULL,
 		.local_funcs = NULL,
 		.parent = env,
@@ -180,7 +208,8 @@ compile_if(struct scope *env, struct progm *prog, struct list *lp)
 		code_inst(prog, Let_opcode);
 		localtab = code_symtab(prog, NULL); /* Let(NULL) is valid. */
 		ret_type = compile_item(&scope, prog,
-					&lp->items[lp->items[0].i ? 2 : 3]);
+					&lp->items[lp->items[0].i ? 2 : 3],
+					tailcall);
 		if (scope.locals->len > 0)
 			prog->code[localtab].symtab = scope.locals;
 		else
@@ -204,32 +233,33 @@ compile_if(struct scope *env, struct progm *prog, struct list *lp)
 		switch (lp->items[1].l->items->sym) {
 		case Equal_builtin:
 			jmp_op = Jmp_ne_opcode;
-			compile_item(env, prog, lp->items[1].l->items + 1);
-			compile_item(env, prog, lp->items[1].l->items + 2);
+			compile_item(env, prog, lp->items[1].l->items + 1,
+				     false);
+			compile_item(env, prog, lp->items[1].l->items + 2,
+				     false);
 			break;
 
 		default:
-			compile_item(env, prog, lp->items + 1);
+			compile_item(env, prog, lp->items + 1, false);
 		}
 		goto no_var_lookup;
 
 	case Symbol_type:
 		jmp_op = Jmp_true_opcode;
 		loc = find_var_loc(env, lp->items[1].sym);
-		if (loc == NULL) {
+		if (loc.scope == NULL) {
 			return Error_type;
 		}
-		if (loc->walk == 0) {
+		if (loc.walk == 0) {
 			/* Local type. */
 			code_inst(prog, Load_imm_local_opcode);
-			code_offset(prog, loc->offset);
+			code_offset(prog, loc.offset);
 		} else {
 			/* Non local type. */
 			code_inst(prog, Load_imm_nonlocal_opcode);
-			code_offset(prog, loc->walk);
-			code_offset(prog, loc->offset);
+			code_offset(prog, loc.walk);
+			code_offset(prog, loc.offset);
 		}
-		free(loc);
 
 	no_var_lookup:
 		scope.locals = malloc(sizeof(symtab));
@@ -237,19 +267,19 @@ compile_if(struct scope *env, struct progm *prog, struct list *lp)
 
 		/* Conditional test. */
 		code_inst(prog, jmp_op);
-		offset1 = code_offset(prog, 0);
+		offset1 = code_si(prog, 0);
 
 		/* True body. */
 		code_inst(prog, Let_opcode);
 		localtab = code_symtab(prog, NULL);
-		ret_type = compile_item(&scope, prog, lp->items + 2);
+		ret_type = compile_item(&scope, prog, lp->items + 2, tailcall);
 		if (scope.locals->len > 0)
 			prog->code[localtab].symtab = scope.locals;
 		else
 			free(scope.locals);
 		code_inst(prog, Yield_opcode);
 		code_inst(prog, Jmp_opcode);
-		offset2 = code_offset(prog, 0);
+		offset2 = code_si(prog, 0);
 		prog->code[offset1].o = offset2 - offset1;
 
 		/* False body. */
@@ -257,7 +287,7 @@ compile_if(struct scope *env, struct progm *prog, struct list *lp)
 		symtab_init(scope.locals);
 		code_inst(prog, Let_opcode);
 		localtab = code_symtab(prog, NULL);
-		compile_item(&scope, prog, lp->items + 3);
+		compile_item(&scope, prog, lp->items + 3, tailcall);
 		if (scope.locals->len > 0)
 			prog->code[localtab].symtab = scope.locals;
 		else
@@ -274,115 +304,141 @@ compile_if(struct scope *env, struct progm *prog, struct list *lp)
 }
 
 enum type
-compile_funcall(struct scope *env, struct progm *prog, struct list *lp)
+compile_set(struct scope *env, struct progm *prog, struct list *lp)
+{
+	enum type ret_val;
+
+	if ((ret_val = compile_item(env, prog, lp->items + 2, false))
+	    == Error_type)
+		return Error_type;
+
+	switch (lp->items[1].type) {
+	case Symbol_type:
+	{
+		struct var_loc loc = find_var_loc(env, lp->items[1].sym);
+
+		if (loc.scope == NULL) {
+			/* FUCK */
+			return Error_type;
+		} else if (loc.walk != 0) {
+			/* Value is non-local. */
+			code_inst(prog, Sto_imm_nonlocal_opcode);
+			code_offset(prog, loc.walk);
+			code_offset(prog, loc.offset);
+		} else {
+			code_inst(prog, Sto_imm_local_opcode);
+			code_offset(prog, loc.offset);
+		}
+		break;
+	}
+
+	default:
+		return Error_type;
+	}
+
+	return ret_val;
+}
+
+enum type
+compile_funcall(struct scope *env, struct progm *prog, struct list *lp,
+		bool tailcall)
 {
 	size_t i;
-//	enum type ret_type;
-	struct var_loc *func_loc;
-
-	if ((func_loc = find_var_loc(env, lp->items->sym)) == NULL) {
-		/* ERROR: could not find symbol. */
-		return Error_type;
-	}
-
-#if 0
-	size_t req_args;
-	struct value var;
-	struct func *new_func;
-	struct func *sym_parent;
-
-	/*
-	 * Obtain the variable definition of the symbol being called.
-	 */
-	var = func_loc->scope->items[func_loc->offset];
-
-	if (var.type != Function_type) {
-		/* ERROR: cannot perform function call on non-function. */
-		/*
-		 * TODO: fix this. Variables can be rebound.
-		 */
-		free(func_loc);
-		return Error_type;
-	}
-
-	/*
-	 * Check arguments to the function.
-	 */
-	req_args = var.f->args->len - (var.f->flags.variadic ? 1 : 0);
-	ret_type = var.f->return_type;
-	if (lp->len - 1 < req_args) {
-		/* ERROR: too few arguments to function. */
-		free(func_loc);
-		return Error_type;
-	}
-
-	if (lp->len - 1 > req_args && !var.f->flags.variadic) {
-		/* ERROR: too many arguments to function. */
-		free(func_loc);
-		return Error_type;
-	}
-#endif
 
 	/*
 	 * Compile all of the arguments.
 	 */
 	for (i = 1; i < lp->len; i++)
-		if (compile_item(env, prog, lp->items + i) == Error_type) {
+		if (compile_item(env, prog, lp->items + i, false) == Error_type)
 			/* ERROR */
-			free(func_loc);
 			return Error_type;
-		}
-
-#if 0
-	/*
-	 * If the function is variadic and the call exploits this, we want to
-	 * put the rest of the arguments in a call to list.
-	 */
-	if (lp->len - 1 > req_args) {
-		for (i = 1 + req_args; i < lp->len; i++)
-			compile_item(env, prog, lp->items + i);
-		code_inst(prog, Make_list_opcode);
-		code_offset(prog, lp->len - req_args - 1);
-	} else if (var.f->flags.variadic) {
-		/*
-		 * If we aren't supplying more variables than are required but
-		 * the function is variadic we want to pass Nil to the variable
-		 * that holds extra arguments.
-		 */
-		code_inst(prog, Alloc_list_opcode);
-		code_offset(prog, 0);
-	}
-#endif
 
 	/*
 	 * Compile the function call.
 	 */
-	if (func_loc->walk != 0) {
-//		new_func = alloc_func();
-//		*new_func = *var.f;
-//		new_func->rt_context = NULL;
-		code_inst(prog, Call_imm_nonlocal_opcode);
+	switch (lp->items->type) {
+	case List_type:
+		if (compile_item(env, prog, lp->items, false) == Error_type) {
+			return Error_type;
+		}
+		code_inst(prog, Call_opcode);
 		code_offset(prog, lp->len - 1);
-		code_offset(prog, func_loc->walk);
-		code_offset(prog, func_loc->offset);
-//		code_func(prog, new_func);
-	} else {
-		/* Local function. */
-		code_inst(prog, Call_imm_local_opcode);
-		code_offset(prog, lp->len - 1);
-		code_offset(prog, func_loc->offset);
+		break;
+
+	case Symbol_type:
+	{
+		size_t ascopes;
+		struct scope *curr;
+		struct var_loc loc = find_var_loc(env, lp->items->sym);
+
+		/*
+		 * Determine if the call is a tail call. This is quite a doozy
+		 * and should be simplified/fixed.
+		 */
+		if (tailcall) {
+			/*
+			 * Ignore any anonymous scopes created by let or control 
+			 * flow.
+			 */
+			for (ascopes = 0, curr = env;
+			     curr != NULL && curr->fdat == NULL;
+			     curr = curr->parent, ascopes++)
+				;
+			if (curr != NULL && curr->func_sym == lp->items->sym) {
+				/* We have found a tail call. */
+				/* Produce yields for the anonymous scopes. */
+				while (ascopes > 0) {
+					code_inst(prog, Yield_opcode);
+					ascopes--;
+				}
+				i = lp->len - 1;
+				do {
+					i--;
+					code_inst(prog, Sto_imm_local_opcode);
+					code_offset(prog, i);
+				} while (i > 0);
+				code_inst(prog, Jmp_abs_opcode);
+				code_offset(prog, 0);
+				break;
+			}
+			/*
+			 * We have not found a tail call. Continue along normal
+			 * compilation paths.
+			 */
+		}
+
+		if (loc.scope == NULL) {
+			/* Could not find the symbol. */
+			code_inst(prog, Call_imm_sym_opcode);
+			code_offset(prog, lp->len - 1);
+			code_sym(prog, lp->items->sym);
+		} else if (loc.walk != 0) {
+			/* Function is nonlocal. */
+			code_inst(prog, Call_imm_nonlocal_opcode);
+			code_offset(prog, lp->len - 1);
+			code_offset(prog, loc.walk);
+			code_offset(prog, loc.offset);
+		} else {
+			code_inst(prog, Call_imm_local_opcode);
+			code_offset(prog, lp->len - 1);
+			code_offset(prog, loc.offset);
+		}
+		break;
 	}
 
 
-	free(func_loc);
-	return Nil_type;//ret_type;
+	case Function_type:
+		/* I don't know when this would happen. */
+	default:
+		return Error_type;
+	}
+	return Nil_type;
 }
 
 enum type
-compile_item(struct scope *env, struct progm *prog, struct value *vp)
+compile_item(struct scope *env, struct progm *prog, struct value *vp,
+	     bool tailcall)
 {
-	struct var_loc *loc;
-
 	switch (vp->type) {
 	case Error_type:
 	case Nil_type:
@@ -397,25 +453,27 @@ compile_item(struct scope *env, struct progm *prog, struct value *vp)
 		return Integer_type;
 
 	case Symbol_type:
-		if ((loc = find_var_loc(env, vp->sym)) == NULL) {
+	{
+		struct var_loc loc = find_var_loc(env, vp->sym);
+		if (loc.scope == NULL) {
 			/* Could not find variable, leave a symbol? */
 			break;
 		}
-		if (loc->scope == env) {
+		if (loc.scope == env) {
 			/* Local variable. */
 			code_inst(prog, Load_imm_local_opcode);
-			code_offset(prog, loc->offset);
+			code_offset(prog, loc.offset);
 		} else {
 			/* Non-local variable. */
 			code_inst(prog, Load_imm_nonlocal_opcode);
-			code_offset(prog, loc->walk);
-			code_offset(prog, loc->offset);
+			code_offset(prog, loc.walk);
+			code_offset(prog, loc.offset);
 		}
-		free(loc);
 		return Integer_type;
+	}
 
 	case List_type:
-		return compile_list(env, prog, vp->l);
+		return compile_list(env, prog, vp->l, tailcall);
 
 	default:
 		/* WTF?? */
@@ -490,7 +548,7 @@ compile_var_def(struct scope *env, struct progm *prog, struct list *lp)
 
 	switch (lp->items[2].type) {
 	case List_type:
-		expr_res = compile_list(env, prog, lp->items[2].l);
+		expr_res = compile_list(env, prog, lp->items[2].l, false);
 		if (expr_res == Nil_type)
 			/*
 			 * ERROR: expression in definition must return some
@@ -515,6 +573,66 @@ compile_var_def(struct scope *env, struct progm *prog, struct list *lp)
 }
 
 enum type
+compile_lambda(struct scope *env, struct progm *prog, struct list *lp)
+{
+	size_t i;
+	int variadic;
+	struct list *p;
+	enum type ret_type;
+	struct func *lambda;
+	struct scope lambda_scope;
+
+	variadic = 0;
+	lambda = alloc_func();
+	lambda_scope.func_sym = 0;
+	lambda_scope.fdat = lambda;
+	lambda_scope.parent = env;
+	lambda->locals = lambda_scope.locals = malloc(sizeof(symtab));
+	symtab_init(lambda->locals);
+	lambda->parent = env->fdat;
+	lambda->return_type = Integer_type;     /* TODO: fix. */
+
+	/*
+	 * Add the arguments
+	 */
+	p = lp->items[1].l;
+	for (i = 0; i < p->len; i++)
+		if (p->items[i].sym == Dot_builtin) {
+			variadic = 1;
+		} else if (sym_exists(lambda_scope.locals, p->items[i].sym)) {
+			/* Duplicate argument. */
+			return Error_type;
+		} else {
+			append(lambda->args, p->items[i]);
+			sym_add(lambda_scope.locals, p->items[i].sym);
+		}
+
+	lambda->flags.variadic = variadic;
+
+	/*
+	 * Compile the body of the function.
+	 * TODO: tail call elimination.
+	 */
+	p = lp;
+	for (i = 2; i < p->len; i++)
+		if ((ret_type = compile_item(&lambda_scope, &lambda->prog,
+					     p->items + i, false))
+		    == Error_type) {
+			/* ERRORROROR */
+			return Error_type;
+		} else if (i < p->len - 1) {
+			code_inst(&lambda->prog, Clear_opcode);
+		} else {
+			code_inst(&lambda->prog, Ret_opcode);
+		}
+
+	lambda->return_type = ret_type;
+	code_inst(prog, Push_imm_func_opcode);
+	code_func(prog, lambda);
+	return Function_type;
+}
+
+enum type
 compile_func_def(struct scope *env, struct progm *prog, struct list *lp)
 {
 	int variadic;
@@ -535,6 +653,7 @@ compile_func_def(struct scope *env, struct progm *prog, struct list *lp)
 	}
 
 	new_func = alloc_func();
+	new_scope.func_sym = p->items[0].sym;
 	new_scope.fdat = new_func;
 	new_scope.parent = env;
 	new_scope.locals = malloc(sizeof(symtab));
@@ -561,13 +680,12 @@ compile_func_def(struct scope *env, struct progm *prog, struct list *lp)
 			free(new_scope.locals);
 			return Error_type;
 		} else {
-			append(args, p->items[i]);
+			append(new_func->args, p->items[i]);
 			sym_add(new_scope.locals, p->items[i].sym);
  		}
 
 
 	new_func->parent = env->fdat;
-	new_func->args = args;
 	new_func->flags.variadic = variadic ? 1 : 0;    /* Redundant. */
 	new_func->return_type = Integer_type;
 	new_func->locals = new_scope.locals;
@@ -584,24 +702,33 @@ compile_func_def(struct scope *env, struct progm *prog, struct list *lp)
 //	append(env->fdat->local_funcs, local_form);
 
 	/*
-	 * Compile the body of the function.
-	 * Todo: tail call elimination.
+	 * Compile the body of the function that is not returned.
 	 */
 	p = lp;
-	for (i = 2; i < p->len; i++)
-		if ((ret_type = compile_item(&new_scope, &new_func->prog,
-					     p->items + i)) == Error_type) {
-			/* ERRORROROR */
+	for (i = 2; i < p->len - 1 ; i++)
+		if (compile_item(&new_scope, &new_func->prog, p->items + i,
+				 false)
+		    == Error_type) {
+			/* Error. Todo: cleanup. */
 			free(args);
 			free(new_func);
 			symtab_clear(new_scope.locals);
 			free(new_scope.locals);
 			return Error_type;
-		} else if (i < p->len - 1) {
-			code_inst(&new_func->prog, Drop_opcode);
 		} else {
-			code_inst(&new_func->prog, Ret_opcode);
+			code_inst(&new_func->prog, Clear_opcode);
 		}
+
+	/*
+	 * Compile the tail, the part that is returned.
+	 */
+	if ((ret_type = compile_item(&new_scope, &new_func->prog, p->items + i,
+				     true)) == Error_type) {
+		/* Error. Todo: cleanup. */
+		return Error_type;
+	}
+
+	code_inst(&new_func->prog, Ret_opcode);
 
 	new_func->return_type = ret_type;
 	code_inst(prog, Sto_imm_local_func_opcode);

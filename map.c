@@ -205,6 +205,19 @@ resize:
 	return map_get(mp, key);
 }
 
+void
+map_copy(struct map *src, struct map *dst)
+{
+	size_t i;
+
+	dst->len = src->len;
+	dst->size = src->size;
+	dst->buckets = realloc(dst->buckets, sizeof(struct bucket) * dst->size);
+
+	for (i = 0; i < dst->size; i++)
+		dst->buckets[i] = src->buckets[i];
+}
+
 /*
 void
 printtab(struct map *p)

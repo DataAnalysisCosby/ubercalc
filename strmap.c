@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <string.h>
 
 int
 str_cmp(void *a1, void *a2)

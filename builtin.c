@@ -17,9 +17,8 @@ init_builtins(void)
 		"let",
 		"list",
 		"*",
-		"-!",
 		"'",
-		"set",
+		"set!",
 		"-"
 	};
 	size_t i;
