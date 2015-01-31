@@ -110,7 +110,7 @@ static struct inst_info {
 	[Sto_imm_local_opcode] = { "sto", "l" },
 	[Sto_imm_local_func_opcode] = { "sto", "lf" },
 	[Sto_imm_local_si_opcode] = { "sto", "ld" },
-	[Sto_imm_nonlocal_opcode] = { "sto", "nd" },
+	[Sto_imm_nonlocal_opcode] = { "sto", "n" },
 	[Sto_imm_nonlocal_func_opcode] = { "sto", "nf" },
 	[Sub2_opcode] = { "sub2", "" },
 	[Sub_imm_si_opcode] = { "sub", "d" },

@@ -33,7 +33,7 @@ struct slice *alloc_slice(struct heap_item **);
 void clear_heap(struct heap_item *curr_item);
 
 void make_nonlocal(struct heap_item **, void *, size_t);
-struct heap_item *mark_heap(struct heap_item *, struct value);
+struct heap_item *mark_heap(struct heap_item **, struct value);
 
 static inline bool
 is_heap_allocated(struct value v)

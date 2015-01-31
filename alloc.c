@@ -27,6 +27,7 @@ alloc_func(struct heap_item **heap)
 	memset(f, 0, sizeof (struct func));
 	(*heap)->data = f;
 	(*heap)->next->data = (*heap)->next->next = NULL;
+	(*heap)->next->locality = 0;
 	*heap = (*heap)->next;
 	f->args = alloc_list(heap, 1);
 	return f;
@@ -47,6 +48,7 @@ alloc_list(struct heap_item **heap, size_t min_cap)
 		return NULL;
 	(*heap)->data = l;
 	(*heap)->next->data = (*heap)->next->next = NULL;
+	(*heap)->next->locality = 0;
 	*heap = (*heap)->next;
 	return l;
 }
@@ -64,6 +66,7 @@ alloc_slice(struct heap_item **heap)
 	s->start = NULL;
 	(*heap)->data = s;
 	(*heap)->next->data = (*heap)->next->next = NULL;
+	(*heap)->next->locality = 0;
 	*heap = (*heap)->next;
 	return s;
 }
@@ -143,29 +146,25 @@ make_nonlocal(struct heap_item **heap_start, void *item, size_t walk)
  * and are put in a list.
  */
 struct heap_item *
-mark_heap(struct heap_item *heap_start, struct value retained)
+mark_heap(struct heap_item **heap_start, struct value retained)
 {
 	size_t i;
 	struct heap_item *r, *p = NULL;
 
 	switch (retained.type) {
 	case Function_type:
-		if ((r = remove_item(&heap_start, retained.f)) != NULL) {
+		if ((r = remove_item(heap_start, retained.f)) != NULL) {
 			r->next = NULL;
 			p = r;
 		}
-		if ((r = remove_item(&heap_start, retained.f->args)) != NULL) {
+		if ((r = remove_item(heap_start, retained.f->args)) != NULL) {
 			r->next = p;
 			p = r;
 		}
-		if ((r = remove_nonlocals(&heap_start)) != NULL) {
-			r->next = p;
-			p = r;
-		}
-		return p;
+		break;
 
 	case List_type:
-		if ((r = remove_item(&heap_start, retained.l)) != NULL) {
+		if ((r = remove_item(heap_start, retained.l)) != NULL) {
 			r->next = NULL;
 			p = r;
 		}
@@ -176,14 +175,10 @@ mark_heap(struct heap_item *heap_start, struct value retained)
 				p = r;
 			}
 		}
-		if ((r = remove_nonlocals(&heap_start)) != NULL) {
-			r->next = p;
-			p = r;
-		}
-		return p;
+		break;
 
 	case Slice_type:
-		if ((r = remove_item(&heap_start, retained.slice)) != NULL) {
+		if ((r = remove_item(heap_start, retained.slice)) != NULL) {
 			r->next = NULL;
 			p = r;
 		}
@@ -194,16 +189,16 @@ mark_heap(struct heap_item *heap_start, struct value retained)
 				p = r;
 			}
 		}
-
-		if ((r = remove_nonlocals(&heap_start)) != NULL) {
-			r->next = p;
-			p = r;
-		}
-		return p;
+		break;
 
 	default:
 		break;
 	}
 
-	return NULL;
+	if ((r = remove_nonlocals(heap_start)) != NULL) {
+		r->next = p;
+		p = r;
+	}
+
+	return p;
 }

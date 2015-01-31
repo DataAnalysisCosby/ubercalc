@@ -57,7 +57,7 @@ prompt(EditLine *e)
 
 struct func global;
 
-struct heap_item eval(struct func *, struct progm *);
+struct heap_item *eval(struct func *, struct progm *);
 extern struct value stack[0x100000];
 extern struct value *stackp;
 

@@ -760,7 +760,7 @@ compile_func_def(struct scope *env, struct progm *prog, struct list *lp)
 	code_offset(prog, offset);
 	code_func(prog, new_func);
 
-	disassemble(new_func->prog);
+//	disassemble(new_func->prog);
 
 	return Nil_type;
 }

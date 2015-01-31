@@ -46,7 +46,7 @@ find_nearest_descendent(struct func *env, struct func *child)
 	return child;
 }
 
-struct heap_item
+struct heap_item *
 eval(struct func *env, struct progm *prog)
 {
 	size_t ignored_walks;
@@ -55,8 +55,7 @@ eval(struct func *env, struct progm *prog)
 	struct context local_context;
 	struct heap_item *heap_start, *curr_heap;
 
-	heap_start = curr_heap = malloc(sizeof (struct heap_item));
-	*heap_start = ((struct heap_item){ NULL, 0, NULL, });
+	heap_start = curr_heap = NULL;
 	if (env->rt_context != NULL)
 		stackp = env->rt_context->local_end;
 
@@ -100,7 +99,7 @@ eval(struct func *env, struct progm *prog)
 			struct func *call;
 			struct func *descendent;
 			struct value popped, returned;
-			struct heap_item heap, *marked;
+			struct heap_item *heap, *marked;
 
 			nargs = NEXT_IMM_OFFSET(local_prog);
 			popped = POP();
@@ -171,7 +170,11 @@ eval(struct func *env, struct progm *prog)
 			heap = eval(call, &call->prog);
 			call->prog.ip = 0;
 
-			returned = *TOP();
+			if (stackp == call->rt_context->local_end)
+				/* No return value. */
+				returned.type = Nil_type;
+			else
+				returned = *TOP();
 
 			/*
 			 * Determine if we need to make the returned value a
@@ -193,6 +196,11 @@ eval(struct func *env, struct progm *prog)
 				 * TODO: error checking.
 				 */
 				returned.f->flags.closure = 1;
+
+				if (heap_start == NULL) {
+					heap_start = curr_heap = malloc(sizeof (struct heap_item));
+					*heap_start = ((struct heap_item){ NULL, 0, NULL, });
+				}
 				new_func = alloc_func(&curr_heap);
 				*new_func = *call;
 				new_func->rt_context =
@@ -226,10 +234,8 @@ eval(struct func *env, struct progm *prog)
 			/* Garbage collect the function. */
 			marked = mark_heap(&heap, returned);
 			/* Free the remaining heap. */
-			if (heap.data != NULL) {
-				free(heap.data);
-				clear_heap(heap.next);
-			}
+			if (heap != NULL)
+				clear_heap(heap);
 			/* Add the marked data into the current heap. */
 			if (marked != NULL) {
 				for (curr_heap->next = marked;
@@ -237,7 +243,6 @@ eval(struct func *env, struct progm *prog)
 				     curr_heap = curr_heap->next)
 					;
 			}
-
 
 			*call->rt_context->local_start = returned;
 			stackp = call->rt_context->local_start + 1;
@@ -277,6 +282,10 @@ eval(struct func *env, struct progm *prog)
 			struct value v = POP();
 			struct value s = { .type = Slice_type, };
 
+			if (heap_start == NULL) {
+				heap_start = curr_heap = malloc(sizeof (struct heap_item));
+				*heap_start = ((struct heap_item){ NULL, 0, NULL, });
+			}
 			s.slice = alloc_slice(&curr_heap);
 			switch (v.type) {
 			case List_type:
@@ -328,7 +337,7 @@ eval(struct func *env, struct progm *prog)
 		case Halt_opcode:
 			*prog = local_prog;
 			prog->ip--;
-			return *heap_start;
+			return heap_start;
 
 		case Jmp_eq_opcode:
 		case Jmp_eq_imm_si_opcode:
@@ -434,6 +443,10 @@ eval(struct func *env, struct progm *prog)
 		{
 			struct value v;
 			size_t cap = NEXT_IMM_OFFSET(local_prog);
+			if (heap_start == NULL) {
+				heap_start = curr_heap = malloc(sizeof (struct heap_item));
+				*heap_start = ((struct heap_item){ NULL, 0, NULL, });
+			}
 			v.type = List_type;
 			v.l = alloc_list(&curr_heap, cap);
 			v.l->len = cap;
@@ -486,7 +499,7 @@ eval(struct func *env, struct progm *prog)
 
 		case Ret_opcode:
 			/* Do not overwrite progm. */
-			return *heap_start;
+			return heap_start;
 
 		case Sto_imm_local_opcode:
 		{
@@ -543,6 +556,10 @@ eval(struct func *env, struct progm *prog)
 				 * TODO: error checking.
 				 */
 				a2.f->flags.closure = 1;
+				if (heap_start == NULL) {
+					heap_start = curr_heap = malloc(sizeof (struct heap_item));
+					*heap_start = ((struct heap_item){ NULL, 0, NULL, });
+				}
 				new_func = alloc_func(&curr_heap);
 				*new_func = *env;
 				new_func->rt_context =
@@ -618,7 +635,7 @@ eval(struct func *env, struct progm *prog)
 		case Yield_opcode:
 			if (ignored_walks == 0) {
 				*prog = local_prog;
-				return *heap_start;
+				return heap_start;
 			}
 
 			/*
@@ -632,5 +649,5 @@ eval(struct func *env, struct progm *prog)
 		default:
 			fprintf(stderr, "unsupported!!\n");
 		}
-	return *heap_start;
+	return heap_start;
 }
