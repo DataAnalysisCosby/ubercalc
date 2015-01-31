@@ -45,14 +45,16 @@ map_exists(struct map *mp, void *key)
 void **
 map_get(struct map *mp, void *key)
 {
-	size_t i, j;
+		size_t i, j;
 	size_t dist;
 	size_t hashv;
 	size_t old_size;
 	struct bucket *p;
 
-	if (mp->size == 0)
+	if (mp->size == 0) {
+		mp->size = 1;
 		goto resize;
+	}
 
 	/* Check if the key exists already. */
 	hashv = mp->hash(key) % mp->size;
@@ -98,9 +100,9 @@ map_get(struct map *mp, void *key)
 	 * closer buckets until we are within a good enough distance. If we
 	 * can't swap with anymore buckets, we know that we need to resize.
 	 */
-	j = i - 1;
+	j = (i == 0) ? mp->size - 1 : i - 1;
 	if (i < hashv) {
-		for (; j >= 0; j--) {
+		for (;; j--) {
 			size_t pdist = mp->buckets[j].dist;
 			size_t new_dist = pdist + (i - j);
 			if (new_dist < HOP_DIST) {
@@ -185,6 +187,7 @@ resize:
 	 */
 	p = mp->buckets;
 	old_size = mp->size;
+//	mp->size <<= 1;
 	mp->size = next_prime(mp->size);
 	mp->buckets = calloc(mp->size, sizeof(struct bucket));
 	if (mp->buckets == NULL)
@@ -192,11 +195,12 @@ resize:
 		return NULL;
 	mp->len = 0;
 
-	for (i = 0; i < old_size; i++)
-		if (p[i].key != NULL)
-			*map_get(mp, p[i].key) = p[i].data;
-
-	free(p);
+	if (p != NULL) {
+		for (i = 0; i < old_size; i++)
+			if (p[i].key != NULL)
+				*map_get(mp, p[i].key) = p[i].data;
+		free(p);
+	}
 
 	/*
 	 * Add the remaining entry, the one we were trying to add in the first

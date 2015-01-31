@@ -9,6 +9,8 @@ init_builtins(void)
 		"define",
 		"/",
 		".",
+		"car",
+		"cdr",
 		"=",
 		">",
 		"if",

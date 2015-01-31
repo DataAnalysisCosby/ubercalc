@@ -242,10 +242,12 @@ size_t code_symtab(struct progm *, symtab *);
 size_t code_inst(struct progm *, enum opcode);
 size_t code_func(struct progm *, struct func *);
 
-static inline size_t 
+static inline size_t
 code_offset(struct progm *prog, size_t offset)
 {
 	return code_sym(prog, offset);
 }
+
+void disassemble(struct progm prog);
 
 #endif

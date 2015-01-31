@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <histedit.h>
 
+#include "alloc.h"
 #include "types.h"
 #include "lex.h"
 #include "parse.h"
@@ -56,7 +57,7 @@ prompt(EditLine *e)
 
 struct func global;
 
-void eval(struct func *, struct progm *);
+struct heap_item eval(struct func *, struct progm *);
 extern struct value stack[0x100000];
 extern struct value *stackp;
 
@@ -74,7 +75,7 @@ main(int argc, char **argv)
 	el_set(el, EL_PROMPT, &prompt);
 	el_set(el, EL_EDITOR, "emacs");
 
-	global.args = alloc_list(1);
+	global.args = alloc_list(&global_heap, 1);
 	global.prog.ip = global.prog.len = global.prog.cap = 0;
 	global.prog.code = NULL;
 	global.rt_context = &local_context;
@@ -107,6 +108,11 @@ main(int argc, char **argv)
 		if (stackp != &stack[0])
 			printf("stackp = %d\n", (stackp - 1)->i);
 		global.prog.len--;
+	}
+
+	if (global_heap_start.data != NULL) {
+		free(global_heap_start.data);
+		clear_heap(global_heap_start.next);
 	}
 
 	return 0;

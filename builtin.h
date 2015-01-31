@@ -10,6 +10,8 @@ enum builtin {
 	Define_builtin,
 	Div_builtin,
 	Dot_builtin,
+	Car_builtin,
+	Cdr_builtin,
 	Equal_builtin,
 	Greater_builtin,
 	If_builtin,

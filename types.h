@@ -61,18 +61,8 @@ struct list {
 	struct value    *items;
 };
 
-static inline struct list *
-alloc_list(size_t min_cap)
-{
-	struct list *lp = malloc(sizeof(struct list));
-	lp->len = 0;
-	lp->cap = min_cap;
-	lp->items = malloc(sizeof(struct value) * min_cap);
-	return lp;
-}
-
 /*
- * Slices is an internal type and appear as lists to the program. They
+ * Slices are an internal type and appear as lists to the program. They
  * are immutable references to a portion of a list. A slice must be
  * copied to a list before it may be modified.
  */
@@ -80,7 +70,6 @@ struct slice {
 	size_t          len;
 	struct value    *start;
 };
-
 
 void append(struct list *, struct value v);
 
@@ -126,22 +115,6 @@ struct func {
 	 */
 };
 
-/*
- * TODO: fix this function somehow.
- */
-static inline struct func *
-alloc_func(void)
-{
-	struct func *fp = malloc(sizeof(struct func));
-	fp->parent = NULL;
-	fp->args = alloc_list(1);
-	fp->locals = NULL;
-	fp->rt_context = NULL;
-	fp->flags.variadic = fp->flags.closure = 0;
-	fp->prog.ip = fp->prog.len = fp->prog.cap = 0;
-	fp->prog.code = NULL;
-	return fp;
-}
 /*
  * contexts are runtime environments that specify locations of variable bindings
  * and identifier mappings.

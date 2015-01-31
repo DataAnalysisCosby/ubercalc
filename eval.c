@@ -2,6 +2,7 @@
 #include <stdlib.h>
 
 #include "eval.h"
+#include "alloc.h"
 #include "types.h"
 #include "builtin.h"
 #include "bytecode.h"
@@ -45,16 +46,17 @@ find_nearest_descendent(struct func *env, struct func *child)
 	return child;
 }
 
-void
+struct heap_item
 eval(struct func *env, struct progm *prog)
 {
-	size_t walk, offset;
 	size_t ignored_walks;
 	struct func local_func;
 	struct progm local_prog = *prog;
 	struct context local_context;
-	struct value *a1, a2;
+	struct heap_item *heap_start, *curr_heap;
 
+	heap_start = curr_heap = malloc(sizeof (struct heap_item));
+	*heap_start = ((struct heap_item){ NULL, 0, NULL, });
 	if (env->rt_context != NULL)
 		stackp = env->rt_context->local_end;
 
@@ -70,15 +72,21 @@ eval(struct func *env, struct progm *prog)
 	for (;;)
 		switch (NEXT_INST(local_prog)) {
 		case Add2_opcode:
+		{
+			struct value *a1, a2;
 			a2 = POP();
 			a1 = TOP();
 			a1->i += a2.i;
 			break;
+		}
 
 		case Add_imm_si_opcode:
-			a1 = TOP();
-			a1->i += NEXT_IMM_SI(local_prog);
+		{
+			struct value *a;
+			a = TOP();
+			a->i += NEXT_IMM_SI(local_prog);
 			break;
+		}
 
 		case Alloc_list_opcode:
 		case Alloc_stack_opcode:
@@ -91,7 +99,8 @@ eval(struct func *env, struct progm *prog)
 			size_t req_args;
 			struct func *call;
 			struct func *descendent;
-			struct value popped;
+			struct value popped, returned;
+			struct heap_item heap, *marked;
 
 			nargs = NEXT_IMM_OFFSET(local_prog);
 			popped = POP();
@@ -113,10 +122,14 @@ eval(struct func *env, struct progm *prog)
 			goto call_func;
 
 		case Call_imm_nonlocal_opcode:
+		{
+			size_t walk, offset;
+
 			nargs = NEXT_IMM_OFFSET(local_prog);
 			walk = NEXT_IMM_OFFSET(local_prog) - ignored_walks;
 			offset = NEXT_IMM_OFFSET(local_prog);
 			call = nonlocal(env, walk, offset)->f;
+		}
 			goto call_func;
 
 		case Call_imm_sym_opcode:
@@ -155,10 +168,10 @@ eval(struct func *env, struct progm *prog)
 				call->rt_context->local_start +
 				call->locals->len;
 
-			eval(call, &call->prog);
+			heap = eval(call, &call->prog);
 			call->prog.ip = 0;
 
-			a2 = *TOP();
+			returned = *TOP();
 
 			/*
 			 * Determine if we need to make the returned value a
@@ -166,8 +179,9 @@ eval(struct func *env, struct progm *prog)
 			 * TODO: factor this, it's repeated in a couple of
 			 * different places.
 			 */
-			if (a2.type == Function_type &&
-			    (descendent = find_nearest_descendent(call, a2.f))
+			if (returned.type == Function_type &&
+			    (descendent = find_nearest_descendent(call,
+								  returned.f))
 			    != NULL) {
 				struct value *p;
 				struct func *new_func;
@@ -178,8 +192,8 @@ eval(struct func *env, struct progm *prog)
 				 * to speed this up.
 				 * TODO: error checking.
 				 */
-				a2.f->flags.closure = 1;
-				new_func = malloc(sizeof(struct func));
+				returned.f->flags.closure = 1;
+				new_func = alloc_func(&curr_heap);
 				*new_func = *call;
 				new_func->rt_context =
 					malloc(sizeof(struct context));
@@ -199,25 +213,91 @@ eval(struct func *env, struct progm *prog)
 					new_func->rt_context->local_end++;
 				}
 				new_func->flags.closure = 1;
-				if (descendent == a2.f) {
+				if (descendent == returned.f) {
 					/* Copy the descendent */
-					descendent =
-						malloc(sizeof(struct func));
-					*descendent = *a2.f;
+					descendent = alloc_func(&curr_heap);
+					*descendent = *returned.f;
 					descendent->rt_context = NULL;
-					a2.f = descendent;
+					returned.f = descendent;
 				}
 				descendent->parent = new_func;
 			}
 
+			/* Garbage collect the function. */
+			marked = mark_heap(&heap, returned);
+			/* Free the remaining heap. */
+			if (heap.data != NULL) {
+				free(heap.data);
+				clear_heap(heap.next);
+			}
+			/* Add the marked data into the current heap. */
+			if (marked != NULL) {
+				for (curr_heap->next = marked;
+				     curr_heap->next != NULL;
+				     curr_heap = curr_heap->next)
+					;
+			}
 
-			*call->rt_context->local_start = a2;
+
+			*call->rt_context->local_start = returned;
 			stackp = call->rt_context->local_start + 1;
 
 			if (call->rt_context == &local_context)
 				call->rt_context = NULL;
 			else
 				*call->rt_context = local_context;
+			break;
+		}
+
+		case Car_opcode:
+		{
+			struct value v = POP();
+			/*
+			 * TODO: we better make sure we can always assume it's a 
+			 * list.
+			 */
+			switch (v.type) {
+			case List_type:
+				PUSH(v.l->items[0]);
+				break;
+
+			case Slice_type:
+				PUSH(v.slice->start[0]);
+				break;
+
+			default:
+				fprintf(stderr, "Cannot car a non-list type.");
+				break;
+			}
+			break;
+		}
+
+		case Cdr_opcode:
+		{
+			struct value v = POP();
+			struct value s = { .type = Slice_type, };
+
+			s.slice = alloc_slice(&curr_heap);
+			switch (v.type) {
+			case List_type:
+				if (v.l->len == 0)
+					break;
+				s.slice->len = v.l->len - 1;
+				s.slice->start = v.l->items + 1;
+				break;
+
+			case Slice_type:
+				if (v.slice->len == 0)
+					break;
+				s.slice->len = v.slice->len - 1;
+				s.slice->start = v.slice->start + 1;
+				break;
+
+			default:
+				fprintf(stderr, "Cannot cdr a non-list type.");
+				break;
+			}
+			PUSH(s);
 			break;
 		}
 
@@ -248,7 +328,7 @@ eval(struct func *env, struct progm *prog)
 		case Halt_opcode:
 			*prog = local_prog;
 			prog->ip--;
-			return;
+			return *heap_start;
 
 		case Jmp_eq_opcode:
 		case Jmp_eq_imm_si_opcode:
@@ -265,7 +345,7 @@ eval(struct func *env, struct progm *prog)
 
 		case Jmp_ne_opcode:
 		{
-			struct value a1;
+			struct value a1, a2;
 
 			a2 = POP();
 			a1 = POP();
@@ -293,7 +373,7 @@ eval(struct func *env, struct progm *prog)
 			break;
 
 		case Jmp_abs_opcode:
-			local_prog.ip = local_prog.code[local_prog.ip].si;
+			local_prog.ip = local_prog.code[local_prog.ip].o;
 			break;
 
 		case Lambda_opcode:
@@ -304,22 +384,21 @@ eval(struct func *env, struct progm *prog)
 		{
 			symtab *locals;
 
-			locals = NEXT_IMM_SYMTAB(local_prog);
+			if ((locals = NEXT_IMM_SYMTAB(local_prog)) == NULL) {
+				/* Ignore this walk. */
+				ignored_walks++;
+				local_context.local_end = stackp;
+				break;
+			}
+
 			local_func.parent = env;
 			local_func.args = NULL;
 			local_func.locals = locals;
 			local_func.rt_context = &local_context;
 			local_context.local_start = stackp;
-			if (locals == NULL) {
-				/* Ignore this walk. */
-				ignored_walks++;
-				local_context.local_end = stackp;
-			} else {
-				stackp += locals->len;
-				local_context.local_end = stackp;
-				/* Recurse if we are not ignoring this walk. */
-				eval(&local_func, &local_prog);
-			}
+			stackp += locals->len;
+			local_context.local_end = stackp;
+			eval(&local_func, &local_prog);
 			break;
 		}
 
@@ -328,76 +407,122 @@ eval(struct func *env, struct progm *prog)
 			abort();
 
 		case Load_imm_local_opcode:
-			a1 = local(env, NEXT_IMM_OFFSET(local_prog));
-			PUSH(*a1);
+		{
+			struct value *v;
+			v = local(env, NEXT_IMM_OFFSET(local_prog));
+			PUSH(*v);
 			break;
+		}
 
 		case Load_imm_nonlocal_opcode:
+		{
+			size_t walk, offset;
+			struct value *v;
+
 			walk = NEXT_IMM_OFFSET(local_prog) - ignored_walks;
 			offset = NEXT_IMM_OFFSET(local_prog);
-			a1 = nonlocal(env, walk, offset);
-			PUSH(*a1);
+			v = nonlocal(env, walk, offset);
+			PUSH(*v);
 			break;
+		}
 
 		case Load_imm_sym_opcode:
 			fprintf(stderr, "unsupported instruction\n");
 			abort();
 
 		case Make_list_opcode:
-			fprintf(stderr, "unsupported instruction\n");
-			abort();
+		{
+			struct value v;
+			size_t cap = NEXT_IMM_OFFSET(local_prog);
+			v.type = List_type;
+			v.l = alloc_list(&curr_heap, cap);
+			v.l->len = cap;
+			while (cap > 0) {
+				struct value item = POP();
+				v.l->items[--cap] = item;
+			}
+			PUSH(v);
+			break;
+		}
 
 		case Mul2_opcode:
+		{
+			struct value *a1, a2;
+
 			a2 = POP();
 			a1 = TOP();
 			a1->i *= a2.i;
 			break;
+		}
 
 		case Mul_imm_si_opcode:
-			a1 = TOP();
-			a1->i *= NEXT_IMM_SI(local_prog);
+		{
+			struct value *a;
+
+			a = TOP();
+			a->i *= NEXT_IMM_SI(local_prog);
 			break;
+		}
 
 		case Push_imm_func_opcode:
-			a2.type = Function_type;
-			a2.f = NEXT_IMM_FUNC(local_prog);
-			PUSH(a2);
+		{
+			struct value a;
+
+			a.type = Function_type;
+			a.f = NEXT_IMM_FUNC(local_prog);
+			PUSH(a);
 			break;
+		}
 
 		case Push_imm_si_opcode:
-			a2.type = Integer_type;
-			a2.i = NEXT_IMM_SI(local_prog);
-			PUSH(a2);
+		{
+			struct value a;
+
+			a.type = Integer_type;
+			a.i = NEXT_IMM_SI(local_prog);
+			PUSH(a);
 			break;
+		}
 
 		case Ret_opcode:
 			/* Do not overwrite progm. */
-			return;
+			return *heap_start;
 
 		case Sto_imm_local_opcode:
-			a1 = local(env, NEXT_IMM_OFFSET(local_prog));
-			*a1 = POP();
+		{
+			struct value *a;
+
+			a = local(env, NEXT_IMM_OFFSET(local_prog));
+			*a = POP();
 			break;
+		}
 
 		case Sto_imm_local_si_opcode:
-			a1 = local(env, NEXT_IMM_OFFSET(local_prog));
-			a1->type = Integer_type;
-			a1->i = NEXT_IMM_SI(local_prog);
+		{
+			struct value *a;
+
+			a = local(env, NEXT_IMM_OFFSET(local_prog));
+			a->type = Integer_type;
+			a->i = NEXT_IMM_SI(local_prog);
 			break;
+		}
 
 		case Sto_imm_local_func_opcode:
 		{
+			struct value *a;
 			struct func *f;
 
-			a1 = local(env, NEXT_IMM_OFFSET(local_prog));
+			a = local(env, NEXT_IMM_OFFSET(local_prog));
 			f = NEXT_IMM_FUNC(local_prog);
-			a1->type = Function_type;
-			a1->f = f;
+			a->type = Function_type;
+			a->f = f;
 			break;
 		}
 
 		case Sto_imm_nonlocal_opcode:
 		{
+			size_t walk, offset;
+			struct value *a1, a2;
 			struct func *descendent;
 
 			walk = NEXT_IMM_OFFSET(local_prog) - ignored_walks;
@@ -418,7 +543,7 @@ eval(struct func *env, struct progm *prog)
 				 * TODO: error checking.
 				 */
 				a2.f->flags.closure = 1;
-				new_func = malloc(sizeof(struct func));
+				new_func = alloc_func(&curr_heap);
 				*new_func = *env;
 				new_func->rt_context =
 					malloc(sizeof(struct context));
@@ -440,8 +565,7 @@ eval(struct func *env, struct progm *prog)
 				new_func->flags.closure = 1;
 				if (descendent == a2.f) {
 					/* Copy the descendent */
-					descendent =
-						malloc(sizeof(struct func));
+					descendent = alloc_func(&curr_heap);
 					*descendent = *a2.f;
 					descendent->rt_context = NULL;
 					a2.f = descendent;
@@ -450,6 +574,9 @@ eval(struct func *env, struct progm *prog)
 				descendent->parent = new_func;
 			}
 
+			if (is_heap_allocated(a2))
+				make_nonlocal(&heap_start, a2.l, walk);
+
 			*a1 = a2;
 			break;
 		}
@@ -457,31 +584,41 @@ eval(struct func *env, struct progm *prog)
 		case Sto_imm_nonlocal_func_opcode:
 		{
 			struct func *f;
+			struct value *a;
+			size_t walk, offset;
 
 			walk = NEXT_IMM_OFFSET(local_prog) - ignored_walks;
 			offset = NEXT_IMM_OFFSET(local_prog);
-			a1 = nonlocal(env, walk, offset);
+			a = nonlocal(env, walk, offset);
 			f = NEXT_IMM_FUNC(local_prog);
-			a1->type = Function_type;
-			a1->f = f;
+			a->type = Function_type;
+			a->f = f;
 			break;
 		}
 
 		case Sub2_opcode:
+		{
+			struct value *a1, a2;
+
 			a2 = POP();
 			a1 = TOP();
 			a1->i -= a2.i;
 			break;
+		}
 
 		case Sub_imm_si_opcode:
-			a1 = TOP();
-			a1->i -= NEXT_IMM_SI(local_prog);
+		{
+			struct value *a;
+
+			a = TOP();
+			a->i -= NEXT_IMM_SI(local_prog);
 			break;
+		}
 
 		case Yield_opcode:
 			if (ignored_walks == 0) {
 				*prog = local_prog;
-				return;
+				return *heap_start;
 			}
 
 			/*
@@ -495,4 +632,5 @@ eval(struct func *env, struct progm *prog)
 		default:
 			fprintf(stderr, "unsupported!!\n");
 		}
+	return *heap_start;
 }

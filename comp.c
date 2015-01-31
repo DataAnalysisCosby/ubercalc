@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
+#include "alloc.h"
 #include "types.h"
 #include "symtab.h"
 #include "builtin.h"
@@ -168,6 +169,20 @@ compile_builtin(struct scope *env, struct progm *prog, struct list *lp,
 	case Define_builtin:
 		return compile_define(env, prog, lp);
 
+	case Car_builtin:
+		if (lp->len != 2)
+			return Error_type;
+		compile_item(env, prog, lp->items + 1, false);
+		code_inst(prog, Car_opcode);
+		return Integer_type;
+
+	case Cdr_builtin:
+		if (lp->len != 2)
+			return Error_type;
+		compile_item(env, prog, lp->items + 1, false);
+		code_inst(prog, Cdr_opcode);
+		return Integer_type;
+
 	case If_builtin:
 		return compile_if(env, prog, lp, tailcall);
 
@@ -176,6 +191,18 @@ compile_builtin(struct scope *env, struct progm *prog, struct list *lp,
 
 	case Lambda_builtin:
 		return compile_lambda(env, prog, lp);
+
+	case List_builtin:
+		if (lp->len < 2) {
+			return Error_type;
+		}
+		for (i = 1; i < lp->len; i++)
+			if (compile_item(env, prog, lp->items + i, false)
+			    == Error_type)
+				return Error_type;
+		code_inst(prog, Make_list_opcode);
+		code_offset(prog, lp->len - 1);
+		return List_type;
 
 	default:
 		return Error_type;
@@ -391,12 +418,10 @@ compile_funcall(struct scope *env, struct progm *prog, struct list *lp,
 					code_inst(prog, Yield_opcode);
 					ascopes--;
 				}
-				i = lp->len - 1;
-				do {
-					i--;
+				for (i = 0; i < lp->len - 1; i++) {
 					code_inst(prog, Sto_imm_local_opcode);
-					code_offset(prog, i);
-				} while (i > 0);
+					code_offset(prog, lp->len - i - 2);
+				}
 				code_inst(prog, Jmp_abs_opcode);
 				code_offset(prog, 0);
 				break;
@@ -551,7 +576,7 @@ compile_var_def(struct scope *env, struct progm *prog, struct list *lp)
 		expr_res = compile_list(env, prog, lp->items[2].l, false);
 		if (expr_res == Nil_type)
 			/*
-			 * ERROR: expression in definition must return some
+			 * ERROR: expression in definiation must return some
 			 * value.
 			 */
 			break;
@@ -583,7 +608,7 @@ compile_lambda(struct scope *env, struct progm *prog, struct list *lp)
 	struct scope lambda_scope;
 
 	variadic = 0;
-	lambda = alloc_func();
+	lambda = alloc_func(&global_heap);
 	lambda_scope.func_sym = 0;
 	lambda_scope.fdat = lambda;
 	lambda_scope.parent = env;
@@ -652,13 +677,13 @@ compile_func_def(struct scope *env, struct progm *prog, struct list *lp)
 		return Error_type;
 	}
 
-	new_func = alloc_func();
+	new_func = alloc_func(&global_heap);
 	new_scope.func_sym = p->items[0].sym;
 	new_scope.fdat = new_func;
 	new_scope.parent = env;
 	new_scope.locals = malloc(sizeof(symtab));
 	symtab_init(new_scope.locals);
-	args = alloc_list(p->len - 1);
+	args = alloc_list(&global_heap, p->len - 1);
 	variadic = 0;
 	for (i = 1; i < p->len; i++)
 		/*
@@ -734,6 +759,8 @@ compile_func_def(struct scope *env, struct progm *prog, struct list *lp)
 	code_inst(prog, Sto_imm_local_func_opcode);
 	code_offset(prog, offset);
 	code_func(prog, new_func);
+
+	disassemble(new_func->prog);
 
 	return Nil_type;
 }
