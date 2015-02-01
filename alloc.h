@@ -10,6 +10,8 @@
  * we call the heap. A new heap should be created every function call, and at
  * the end of the call all items in the heap will be scanned and freed if they
  * can be.
+ * The first heap_item in the heap list must be stack allocated. The garbage
+ * collection algorithms will assume this.
  */
 
 struct heap_item {
