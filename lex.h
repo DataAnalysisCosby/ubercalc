@@ -5,6 +5,7 @@ enum token_id {
 	Illegal_tok,
 	Empty_tok,
 	Identifier_tok,
+	Newline_tok,
 	Number_tok,
 	String_tok,
 	Paren_op_tok,   /* Opening parenthesis. */

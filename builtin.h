@@ -12,6 +12,7 @@ enum builtin {
 	Dot_builtin,
 	Car_builtin,
 	Cdr_builtin,
+	Cons_builtin,
 	Equal_builtin,
 	Greater_builtin,
 	If_builtin,

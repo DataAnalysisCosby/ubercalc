@@ -8,24 +8,24 @@
  * The capacity of the list grows exponentially.
  */
 void
-append(struct list *lp, struct value v)
+append(struct vector *vp, struct value v)
 {
-	if (lp->cap == 0)
-		lp->cap = 1;
-	if (lp->len + 1 >= lp->cap) {
-		lp->cap <<= 1;
-		lp->items = realloc(lp->items,
-				    sizeof(struct value) * lp->cap);
+	if (vp->cap == 0)
+		vp->cap = 1;
+	if (vp->len + 1 >= vp->cap) {
+		vp->cap <<= 1;
+		vp->items = realloc(vp->items,
+				    sizeof(struct value) * vp->cap);
 	}
 
-	lp->items[lp->len++] = v;
+	vp->items[vp->len++] = v;
 }
 
 /*
  * Create a slice of a list starting at 'from' and ending at 'to'.
  */
 struct slice
-slice(struct list *lp, size_t from, size_t to)
+slice(struct vector *vp, size_t from, size_t to)
 {
 	struct slice f = { 0, NULL };
 	return f;
@@ -35,14 +35,14 @@ slice(struct list *lp, size_t from, size_t to)
  * Create a slice of a list ...
  */
 struct slice
-slice_to(struct list *lp, size_t to)
+slice_to(struct vector *lp, size_t to)
 {
 	struct slice f = { 0, NULL };
 	return f;
 }
 
 struct slice
-slice_from(struct list *lp, size_t from)
+slice_from(struct vector *lp, size_t from)
 {
 	struct slice f = { 0, NULL };
 	return f;

@@ -3,7 +3,7 @@
 
 #include "types.h"
 
-enum type compile(struct progm *, struct list *);
+enum type compile(struct progm *, struct vector *);
 void set_compiler_global_context(struct func *);
 
 #endif

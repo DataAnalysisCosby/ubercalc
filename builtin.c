@@ -11,6 +11,7 @@ init_builtins(void)
 		".",
 		"car",
 		"cdr",
+		"cons",
 		"=",
 		">",
 		"if",

@@ -16,7 +16,11 @@ enum type {
 	Integer_type,
 	Real_type,
 	Symbol_type,
+	Pair_type,
+	/*
 	List_type,
+	*/
+	Vector_type,
 	Slice_type,
 	Function_type,
 };
@@ -25,12 +29,15 @@ static inline const char *
 type_to_str(enum type id)
 {
 	static const char *nametab[] = {
-		"none",
+		"error",
+		"nil",
 		"integer",
 		"real",
 		"symbol",
 		"list",
-		"list",         /* Slices are "lists". */
+		"vector",
+		"vector",
+//		"list",         /* Slices are "lists". */
 		"function",
 		"???",
 		"???",
@@ -39,7 +46,8 @@ type_to_str(enum type id)
 	return nametab[id];
 }
 
-struct list;
+struct pair;
+struct vector;
 struct slice;
 struct func;
 
@@ -50,20 +58,27 @@ struct value {
 		float           r;      /* real         */
 		size_t          sym;    /* symbol       */
 		size_t          o;      /* offset       */
-		struct list     *l;     /* list         */
+//		struct list     *l;     /* list         */
+		struct pair     *p;
+		struct vector   *v;     /* vector       */
 		struct slice    *slice; /* slice        */
 		struct func     *f;     /* function     */
 	};
 };
 
-struct list {
+struct pair {
+	struct value    car;
+	struct pair     *cdr;
+};
+
+struct vector {
 	size_t          len, cap;
 	struct value    *items;
 };
 
 /*
- * Slices are an internal type and appear as lists to the program. They
- * are immutable references to a portion of a list. A slice must be
+ * Slices are an internal type and appear as vectors to the program. They
+ * are immutable references to a portion of a vector. A slice must be
  * copied to a list before it may be modified.
  */
 struct slice {
@@ -71,16 +86,16 @@ struct slice {
 	struct value    *start;
 };
 
-void append(struct list *, struct value v);
+void append(struct vector *, struct value v);
 
-struct slice slice(struct list *, size_t from, size_t to);
-struct slice slice_to(struct list *, size_t to);
-struct slice slice_from(struct list *, size_t from);
+struct slice slice(struct vector *, size_t from, size_t to);
+struct slice slice_to(struct vector *, size_t to);
+struct slice slice_from(struct vector *, size_t from);
 
 /*
- * Copy a slice into a new string. Caller is responsible for cleaning up memory.
+ * Copy a slice into a new vector. Caller is responsible for cleaning up memory.
  */
-struct list *make_list(struct slice);
+struct list *make_vector(struct slice);
 
 struct context;
 
@@ -89,7 +104,7 @@ struct context;
  */
 struct func {
 	struct func     *parent;        /* Perhaps remove? */
-	struct list     *args;          /* Must be a list of symbols. */
+	struct vector   *args;          /* Must be a list of symbols. */
 	symtab          *locals;
 	struct progm    prog;
 	struct context  *rt_context;

@@ -15,6 +15,23 @@ struct heap_item *global_heap = &global_heap_start;
  *  - Fix error handling (for now we just return null).
  */
 
+struct value *
+alloc_value(struct heap_item **heap)
+{
+	struct value *v;
+	(*heap)->next = malloc(sizeof (struct heap_item));
+	if ((*heap)->next == NULL)
+		return NULL;
+	if ((v = malloc(sizeof (struct value))) == NULL)
+		return NULL;
+	memset(v, 0, sizeof (struct value));
+	(*heap)->data = v;
+	(*heap)->next->data = (*heap)->next->next = NULL;
+	(*heap)->next->locality = 0;
+	*heap = (*heap)->next;
+	return v;
+}
+
 struct func *
 alloc_func(struct heap_item **heap)
 {
@@ -29,28 +46,45 @@ alloc_func(struct heap_item **heap)
 	(*heap)->next->data = (*heap)->next->next = NULL;
 	(*heap)->next->locality = 0;
 	*heap = (*heap)->next;
-	f->args = alloc_list(heap, 1);
+	f->args = alloc_vector(heap, 1);
 	return f;
 }
 
-struct list *
-alloc_list(struct heap_item **heap, size_t min_cap)
+struct pair *
+alloc_pair(struct heap_item **heap)
 {
-	struct list *l;
+	struct pair *p;
 	(*heap)->next = malloc(sizeof (struct heap_item));
 	if ((*heap)->next == NULL)
 		return NULL;
-	if ((l = malloc(sizeof (struct list))) == NULL)
+	if ((p = malloc(sizeof (struct pair))) == NULL)
 		return NULL;
-	l->len = 0;
-	l->cap = min_cap;
-	if ((l->items = calloc(min_cap, sizeof(struct value))) == NULL)
-		return NULL;
-	(*heap)->data = l;
+	memset(p, 0, sizeof (struct pair));
+	(*heap)->data = p;
 	(*heap)->next->data = (*heap)->next->next = NULL;
 	(*heap)->next->locality = 0;
 	*heap = (*heap)->next;
-	return l;
+	return p;
+}
+
+struct vector *
+alloc_vector(struct heap_item **heap, size_t min_cap)
+{
+	struct vector *v;
+	(*heap)->next = malloc(sizeof (struct heap_item));
+	if ((*heap)->next == NULL)
+		return NULL;
+	if ((v = malloc(sizeof (struct vector))) == NULL)
+		return NULL;
+	v->len = 0;
+	v->cap = min_cap;
+	if ((v->items = calloc(min_cap, sizeof(struct value))) == NULL)
+		return NULL;
+	(*heap)->data = v;
+	(*heap)->next->data = (*heap)->next->next = NULL;
+	(*heap)->next->locality = 0;
+	*heap = (*heap)->next;
+	return v;
 }
 
 struct slice *
@@ -90,12 +124,24 @@ clear_heap(struct heap_item *curr_item)
  * Removes an item from the heap.
  */
 static struct heap_item *
-remove_item(struct heap_item **heap_start, void *item)
+remove_item(struct heap_item *heap_start, void *item)
 {
 	struct heap_item *p, **prevp;
 
-	prevp = heap_start;
-	for (p = *heap_start; p->data != NULL; prevp = &p->next, p = p->next)
+	/*
+	 * Check if the item is the first in the heap. If it is we'll need to
+	 * reclaim some new space for its return value.
+	 */
+	if (heap_start->data == item) {
+		struct heap_item saved = *heap_start;
+		p = heap_start->next;
+		*heap_start = *p;
+		*p = saved;
+		return p;
+	}
+
+	prevp = &heap_start->next;
+	for (p = *prevp; p->data != NULL; prevp = &p->next, p = p->next)
 		if (p->data == (void *)item) {
 			*prevp = p->next;
 			return p;
@@ -104,15 +150,18 @@ remove_item(struct heap_item **heap_start, void *item)
 }
 
 static struct heap_item *
-remove_nonlocals(struct heap_item **heap_start)
+remove_nonlocals(struct heap_item *heap_start)
 {
 	struct heap_item *p, *saved = NULL;
 
-	if (*heap_start == NULL)
+	if (heap_start == NULL)
 		return NULL;
-	while ((p = *heap_start)->locality > 0) {
-		p->locality--;
-		*heap_start = p->next;
+	while (heap_start->locality > 0) {
+		struct heap_item curr = *heap_start;
+		curr.locality--;
+		p = heap_start->next;
+		*heap_start = *heap_start->next;
+		*p = curr;
 		p->next = saved;
 		saved = p;
 	}
@@ -121,37 +170,67 @@ remove_nonlocals(struct heap_item **heap_start)
 }
 
 void
-make_nonlocal(struct heap_item **heap_start, void *item, size_t walk)
+make_nonlocal(struct heap_item *heap_start, void *item, size_t walk)
 {
 	struct heap_item *p, **prevp;
 
-	prevp = heap_start;
-	for (p = *heap_start; p != NULL; prevp = &p->next, p = p->next)
+	if (heap_start->data == item) {
+		if (heap_start->locality < walk)
+			heap_start->locality = walk;
+		return;
+	}
+	prevp = &heap_start->next;
+	for (p = *prevp; p != NULL; prevp = &p->next, p = p->next)
 		if (p->data == item && p->locality < walk) {
+			struct heap_item saved;
+
 			p->locality = walk;
 			/*
 			 * Move the nonlocal to the front so that they are easy
 			 * to pick off.
 			 */
 			*prevp = p->next;
-			p->next = *heap_start;
-			*heap_start = p;
+			saved = *heap_start;
+			*heap_start = *p;
+			heap_start->next = p;
+			*p = saved;
 			return;
 		}
 }
 
 /*
- * Finds and returns a list of values that must be saved on the heap should
+ * Finds and returns a vector of values that must be saved on the heap should
  * some value be retained. Items that must be saved are removed from the heap
- * and are put in a list.
+ * and are put in a vector.
  */
 struct heap_item *
-mark_heap(struct heap_item **heap_start, struct value retained)
+mark_heap(struct heap_item *heap_start, struct value retained)
 {
 	size_t i;
+	struct value next;
 	struct heap_item *r, *p = NULL;
 
 	switch (retained.type) {
+	case Pair_type:
+		if (retained.p == NULL)
+			break;
+		if ((r = remove_item(heap_start, retained.p)) != NULL) {
+			r->next = NULL;
+			p = r;
+		}
+		if ((r = mark_heap(heap_start, retained.p->car)) != NULL) {
+			r->next = p;
+			p = r;
+		}
+		next.type = Pair_type;
+		next.p = retained.p->cdr;
+		if (retained.p->cdr != NULL &&
+		    (r = mark_heap(heap_start, next)) != NULL) {
+			r->next = p;
+			p = r;
+		}
+		break;
+
 	case Function_type:
 		if ((r = remove_item(heap_start, retained.f)) != NULL) {
 			r->next = NULL;
@@ -163,13 +242,13 @@ mark_heap(struct heap_item **heap_start, struct value retained)
 		}
 		break;
 
-	case List_type:
-		if ((r = remove_item(heap_start, retained.l)) != NULL) {
+	case Vector_type:
+		if ((r = remove_item(heap_start, retained.v)) != NULL) {
 			r->next = NULL;
 			p = r;
 		}
-		for (i = 0; i < retained.l->len; i++) {
-			r = mark_heap(heap_start, retained.l->items[i]);
+		for (i = 0; i < retained.v->len; i++) {
+			r = mark_heap(heap_start, retained.v->items[i]);
 			if (r != NULL) {
 				r->next = p;
 				p = r;

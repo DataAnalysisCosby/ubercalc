@@ -11,6 +11,7 @@ static enum token_id number_rule(char **);
 static enum token_id identifier_rule(char **);
 static enum token_id paren_op_rule(char **);
 static enum token_id paren_cl_rule(char **);
+static enum token_id newline_rule(char **);
 
 /*
  * lex_token advances src until the end of the token or until the null
@@ -44,12 +45,13 @@ lex_token(char **src, size_t *ws)
 		['-']           = &identifier_rule,
 		['(']           = &paren_op_rule,
 		[')']           = &paren_cl_rule,
+		['\n']          = &newline_rule,
 	};
 
 
 	/* Remove all whitespace. */
 	*ws = 0;
-	while (**src == ' ' || **src == '\t' || **src == '\n') {
+	while (**src == ' ' || **src == '\t') {
 		++*src;
 		++*ws;
 	}
@@ -129,4 +131,11 @@ paren_cl_rule(char **src)
 {
 	(*src)++;
 	return Paren_cl_tok;
+}
+
+static enum token_id
+newline_rule(char **src)
+{
+	(*src)++;
+	return Newline_tok;
 }
