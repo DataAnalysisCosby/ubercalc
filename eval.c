@@ -24,11 +24,17 @@ walk_env(struct func *env, size_t walk)
 	return env;
 }
 
+#if 1
+
 static inline struct value *
 local(struct func *env, size_t offset)
 {
 	return env->rt_context->local_start + offset;
 }
+
+#else
+# define local(env, offset) ((env)->rt_context->local_start + (offset))
+#endif
 
 static inline struct value *
 nonlocal(struct func *env, size_t walk, size_t offset)
@@ -46,34 +52,37 @@ find_nearest_descendent(struct func *env, struct func *child)
 	return child;
 }
 
-struct heap_item *
+struct heap_item
 eval(struct func *env, struct progm *prog)
 {
 	size_t ignored_walks;
 	struct func local_func;
 	struct progm local_prog = *prog;
 	struct context local_context;
-	struct heap_item *heap_start, *curr_heap;
+	struct heap_item heap_start = { NULL, 0, NULL, };
+	struct heap_item *curr_heap = &heap_start;
 
 #define INST(n) [n##_opcode] = &&INST_##n
 	static const void *inst_tab[] = {
 		INST(Add2), INST(Add_imm_si), INST(Alloc_list),
-		INST(Alloc_stack), INST(Call), INST(Call_imm_func),
-		INST(Call_imm_local), INST(Call_imm_nonlocal),
-		INST(Call_imm_sym), INST(Car), INST(Cdr), INST(Clear),
-		INST(Div2), INST(Div_imm_si), INST(Drop), INST(Dup), INST(Halt),
-		INST(Jmp), INST(Jmp_abs), INST(Jmp_eq), INST(Jmp_eq_imm_si),
+		INST(Alloc_stack), INST(Call), INST(Call_current),
+		INST(Call_imm_func), INST(Call_imm_local),
+		INST(Call_imm_nonlocal), INST(Call_imm_sym), INST(Car),
+		INST(Cdr), INST(Clear),	INST(Div2), INST(Div_imm_si),
+		INST(Drop), INST(Dup), INST(Halt),
+		INST(Jmp), INST(Jmp_eq), INST(Jmp_eq_imm_si),
 		INST(Jmp_eq_imm_ui), INST(Jmp_false), INST(Jmp_gt),
 		INST(Jmp_gt_imm_si), INST(Jmp_gt_imm_ui), INST(Jmp_lt),
 		INST(Jmp_lt_imm_si), INST(Jmp_lt_imm_ui), INST(Jmp_ne),
 		INST(Jmp_ne_imm_si), INST(Jmp_ne_imm_ui), INST(Jmp_true),
 		INST(Lambda), INST(Let), INST(Load), INST(Load_imm_local),
 		INST(Load_imm_nonlocal), INST(Load_imm_sym), INST(Make_list),
-		INST(Mul2), INST(Mul_imm_si), INST(Push_imm_func),
-		INST(Push_imm_si), INST(Ret), INST(Sto_imm_local),
-		INST(Sto_imm_local_si), INST(Sto_imm_local_func),
-		INST(Sto_imm_nonlocal), INST(Sto_imm_nonlocal_func), INST(Sub2),
-		INST(Sub_imm_si), INST(Yield),
+		INST(Make_pair), INST(Mul2), INST(Mul_imm_si),
+		INST(Push_imm_func), INST(Push_imm_si), INST(Ret),
+		INST(Sto_imm_local), INST(Sto_imm_local_si),
+		INST(Sto_imm_local_func), INST(Sto_imm_nonlocal),
+		INST(Sto_imm_nonlocal_func), INST(Sub2), INST(Sub_imm_si),
+		INST(Yield),
 	};
 
 #define DEF_INST(n) INST_##n:
@@ -83,7 +92,6 @@ eval(struct func *env, struct progm *prog)
 	do { fprintf(stderr, "Instruction " #n " is unsupported\n");	\
 		abort(); } while(0)
 
-	heap_start = curr_heap = NULL;
 	if (env->rt_context != NULL)
 		stackp = env->rt_context->local_end;
 
@@ -132,7 +140,7 @@ eval(struct func *env, struct progm *prog)
 		struct func *call;
 		struct func *descendent;
 		struct value popped, returned;
-		struct heap_item *heap, *marked;
+		struct heap_item heap, *marked;
 
 		DEF_INST(Call) {
 			nargs = NEXT_IMM_OFFSET(local_prog);
@@ -142,6 +150,12 @@ eval(struct func *env, struct progm *prog)
 				abort();
 			}
 			call = popped.f;
+			goto call_func;
+		}
+
+		DEF_INST(Call_current) {
+			nargs = NEXT_IMM_OFFSET(local_prog);
+			call = env;
 			goto call_func;
 		}
 
@@ -228,10 +242,6 @@ eval(struct func *env, struct progm *prog)
 			 */
 			returned.f->flags.closure = 1;
 
-			if (heap_start == NULL) {
-				heap_start = curr_heap = malloc(sizeof (struct heap_item));
-				*heap_start = ((struct heap_item){ NULL, 0, NULL, });
-			}
 			new_func = alloc_func(&curr_heap);
 			*new_func = *call;
 			new_func->rt_context =
@@ -265,8 +275,10 @@ eval(struct func *env, struct progm *prog)
 		/* Garbage collect the function. */
 		marked = mark_heap(&heap, returned);
 		/* Free the remaining heap. */
-		if (heap != NULL)
-			clear_heap(heap);
+		if (heap.data != NULL) {
+			free(heap.data);
+			clear_heap(heap.next);
+		}
 		/* Add the marked data into the current heap. */
 		if (marked != NULL) {
 			for (curr_heap->next = marked;
@@ -289,13 +301,23 @@ eval(struct func *env, struct progm *prog)
 
 	DEF_INST(Car) {
 		struct value v = POP();
+
+		if (v.type != Pair_type) {
+			// TODO: error here.
+		}
+		if (v.p == NULL) {
+			// TODO: error here.
+		}
+		PUSH(v.p->car);
+
+#if 0
 		/*
 		 * TODO: we better make sure we can always assume it's a
-		 * list.
+		 * vector.
 		 */
 		switch (v.type) {
-		case List_type:
-			PUSH(v.l->items[0]);
+		case Vector_type:
+			PUSH(v.v->items[0]);
 			break;
 
 		case Slice_type:
@@ -303,28 +325,36 @@ eval(struct func *env, struct progm *prog)
 			break;
 
 		default:
-			fprintf(stderr, "Cannot car a non-list type.");
+			fprintf(stderr, "Cannot car a non-vector type.");
 			break;
 		}
+#endif
 		RUN_NEXT_INST();
 	}
 
 
 	DEF_INST(Cdr) {
 		struct value v = POP();
-		struct value s = { .type = Slice_type, };
+		struct value r = { .type = Pair_type, };
 
-		if (heap_start == NULL) {
-			heap_start = curr_heap = malloc(sizeof (struct heap_item));
-			*heap_start = ((struct heap_item){ NULL, 0, NULL, });
+		if (v.type != Pair_type) {
+			// TODO: error here.
 		}
+		if (v.p == NULL) {
+			// TODO: error here.
+		}
+
+		r.p = v.p->cdr;
+		PUSH(r);
+
+#if 0
 		s.slice = alloc_slice(&curr_heap);
 		switch (v.type) {
-		case List_type:
-			if (v.l->len == 0)
+		case Vector_type:
+			if (v.v->len == 0)
 				break;
-			s.slice->len = v.l->len - 1;
-			s.slice->start = v.l->items + 1;
+			s.slice->len = v.v->len - 1;
+			s.slice->start = v.v->items + 1;
 			break;
 
 		case Slice_type:
@@ -335,10 +365,11 @@ eval(struct func *env, struct progm *prog)
 			break;
 
 		default:
-			fprintf(stderr, "Cannot cdr a non-list type.");
+			fprintf(stderr, "Cannot cdr a non-vector type.");
 			break;
 		}
 		PUSH(s);
+#endif
 		RUN_NEXT_INST();
 	}
 
@@ -372,11 +403,6 @@ eval(struct func *env, struct progm *prog)
 	}
 
 	DEF_INST(Jmp) {
-		local_prog.ip += local_prog.code[local_prog.ip].si + 1;
-		RUN_NEXT_INST();
-	}
-
-	DEF_INST(Jmp_abs) {
 		local_prog.ip = local_prog.code[local_prog.ip].o;
 		RUN_NEXT_INST();
 	}
@@ -399,7 +425,7 @@ eval(struct func *env, struct progm *prog)
 		a2 = POP();
 		a1 = POP();
 		if (a1.i != a2.i) {
-			local_prog.ip += local_prog.code[local_prog.ip].si + 1;
+			local_prog.ip = local_prog.code[local_prog.ip].o;
 			RUN_NEXT_INST();
 		}
 		(void)NEXT_IMM_OFFSET(local_prog);
@@ -411,7 +437,7 @@ eval(struct func *env, struct progm *prog)
 
 	DEF_INST(Jmp_true) {
 		if (POP().i)
-			local_prog.ip += local_prog.code[local_prog.ip].si + 1;
+			local_prog.ip = local_prog.code[local_prog.ip].o;
 		RUN_NEXT_INST();
 	}
 
@@ -463,20 +489,42 @@ eval(struct func *env, struct progm *prog)
 	UNIMPLEMENTED_INST(Load_imm_sym);
 
 	DEF_INST(Make_list) {
-		struct value v;
-		size_t cap = NEXT_IMM_OFFSET(local_prog);
-		if (heap_start == NULL) {
-			heap_start = curr_heap = malloc(sizeof (struct heap_item));
-			*heap_start = ((struct heap_item){ NULL, 0, NULL, });
+		struct pair *curr, *next;
+		struct value v = { .type = Pair_type, };
+		size_t i, len = NEXT_IMM_OFFSET(local_prog);
+
+		switch (len) {
+		case 0:
+			PUSH(((struct value){ .type = Pair_type, .p = NULL }));
+			break;
+
+		case 2:
+			DEF_INST(Make_pair) {
+				struct value p = { .type = Pair_type, };
+
+				p.p = alloc_pair(&curr_heap);
+				p.p->cdr = alloc_pair(&curr_heap);
+				p.p->cdr->car = POP();
+				p.p->car = POP();
+
+				PUSH(p);
+				RUN_NEXT_INST();
+			}
+
+		default:
+			next = NULL;
+			for (i = 0; i < len - 1; i++) {
+				curr = alloc_pair(&curr_heap);
+				curr->car = POP();
+				curr->cdr = next;
+				next = curr;
+			}
+			v.p = alloc_pair(&curr_heap);
+			v.p->car = POP();
+			v.p->cdr = next;
+			PUSH(v);
+			break;
 		}
-		v.type = List_type;
-		v.l = alloc_list(&curr_heap, cap);
-		v.l->len = cap;
-		while (cap > 0) {
-			struct value item = POP();
-			v.l->items[--cap] = item;
-		}
-		PUSH(v);
 		RUN_NEXT_INST();
 	}
 
@@ -573,10 +621,6 @@ eval(struct func *env, struct progm *prog)
 			 * TODO: error checking.
 			 */
 			a2.f->flags.closure = 1;
-			if (heap_start == NULL) {
-				heap_start = curr_heap = malloc(sizeof (struct heap_item));
-				*heap_start = ((struct heap_item){ NULL, 0, NULL, });
-			}
 			new_func = alloc_func(&curr_heap);
 			*new_func = *env;
 			new_func->rt_context =
@@ -609,7 +653,7 @@ eval(struct func *env, struct progm *prog)
 		}
 
 		if (is_heap_allocated(a2))
-			make_nonlocal(&heap_start, a2.l, walk);
+			make_nonlocal(&heap_start, a2.v, walk);
 
 		*a1 = a2;
 		RUN_NEXT_INST();

@@ -52,6 +52,7 @@ enum opcode {
 	 */
 
 	Call_opcode,
+	Call_current_opcode,
 	Call_imm_func_opcode,
 	Call_imm_local_opcode,
 	Call_imm_nonlocal_opcode,
@@ -81,15 +82,14 @@ enum opcode {
 
 	/*
 	 * All branch instructions have at least one argument that specifies the
-	 * offset of the jump. This immediate is always the first supplied and
-	 * is a signed integer.
+	 * destination of the jump. This immediate is always the first supplied
+	 * and is a unsigned integer.
 	 *
-	 * Beware of Jmp_abs! Bytecode addresses are context dependent. That is
-	 * to say, a function's bytecode address 0 is different from a disparate
-	 * function's bytecode address 0.
+	 * Bytecode addresses are context dependent. That is to say, a
+	 * function's bytecode address 0 is different from a disparate
+	 * function's bytecode address 0. Beware of this!
 	 */
 	Jmp_opcode,     /* Unconditional jump. */
-	Jmp_abs_opcode,
 	Jmp_eq_opcode,
 	Jmp_eq_imm_si_opcode,
 	Jmp_eq_imm_ui_opcode,
@@ -118,6 +118,7 @@ enum opcode {
 	Load_imm_sym_opcode,
 
 	Make_list_opcode,
+	Make_pair_opcode,
 
 	Mul2_opcode,
 	/*

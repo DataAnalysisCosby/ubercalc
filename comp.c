@@ -74,30 +74,31 @@ set_compiler_global_context(struct func *env)
                                                 -Strong Bad
  */
 
-enum type compile_list(struct scope *, struct progm *, struct list *, bool);
-enum type compile_builtin(struct scope *, struct progm *, struct list *,
+enum type compile_vector(struct scope *, struct progm *, struct vector *, bool);
+enum type compile_builtin(struct scope *, struct progm *, struct vector *,
 			  enum builtin, bool);
-enum type compile_if(struct scope *, struct progm *, struct list *, bool);
-enum type compile_set(struct scope *, struct progm *, struct list *);
-enum type compile_funcall(struct scope *, struct progm *, struct list *, bool);
+enum type compile_if(struct scope *, struct progm *, struct vector *, bool);
+enum type compile_let(struct scope *, struct progm *, struct vector *);
+enum type compile_set(struct scope *, struct progm *, struct vector *);
+enum type compile_funcall(struct scope *, struct progm *, struct vector *, bool);
 enum type compile_item(struct scope *, struct progm *, struct value *, bool);
-enum type compile_define(struct scope *, struct progm *, struct list *);
-enum type compile_lambda(struct scope *, struct progm *, struct list *);
-enum type compile_var_def(struct scope *, struct progm *, struct list *);
-enum type compile_func_def(struct scope *, struct progm *, struct list *);
+enum type compile_define(struct scope *, struct progm *, struct vector *);
+enum type compile_lambda(struct scope *, struct progm *, struct vector *);
+enum type compile_var_def(struct scope *, struct progm *, struct vector *);
+enum type compile_func_def(struct scope *, struct progm *, struct vector *);
 
 enum type
-compile(struct progm *prog, struct list *lp)
+compile(struct progm *prog, struct vector *lp)
 {
-	return compile_list(&global, prog, lp, false);
+	return compile_vector(&global, prog, lp, false);
 }
 
 /*
- * Compile a list in place, converting it into a format that the compiler can
+ * Compile a vector in place, converting it into a format that the compiler can
  * run. The value returned is the inferred type of the expression.
  */
 enum type
-compile_list(struct scope *env, struct progm *prog, struct list *lp,
+compile_vector(struct scope *env, struct progm *prog, struct vector *lp,
 	     bool tailcall)
 {
 	if (lp->len == 0)
@@ -125,7 +126,7 @@ compile_list(struct scope *env, struct progm *prog, struct list *lp,
 }
 
 enum type
-compile_builtin(struct scope *env, struct progm *prog, struct list *lp,
+compile_builtin(struct scope *env, struct progm *prog, struct vector *lp,
 		enum builtin sym, bool tailcall)
 {
 	size_t i;
@@ -183,6 +184,14 @@ compile_builtin(struct scope *env, struct progm *prog, struct list *lp,
 		code_inst(prog, Cdr_opcode);
 		return Integer_type;
 
+	case Cons_builtin:
+		if (lp->len != 3)
+			return Error_type;
+		compile_item(env, prog, lp->items + 1, false);
+		compile_item(env, prog, lp->items + 2, false);
+		code_inst(prog, Make_pair_opcode);
+		return Pair_type;
+
 	case If_builtin:
 		return compile_if(env, prog, lp, tailcall);
 
@@ -191,6 +200,9 @@ compile_builtin(struct scope *env, struct progm *prog, struct list *lp,
 
 	case Lambda_builtin:
 		return compile_lambda(env, prog, lp);
+
+	case Let_builtin:
+		return compile_let(env, prog, lp, tailcall);
 
 	case List_builtin:
 		if (lp->len < 2) {
@@ -202,7 +214,7 @@ compile_builtin(struct scope *env, struct progm *prog, struct list *lp,
 				return Error_type;
 		code_inst(prog, Make_list_opcode);
 		code_offset(prog, lp->len - 1);
-		return List_type;
+		return Vector_type;
 
 	default:
 		return Error_type;
@@ -210,7 +222,25 @@ compile_builtin(struct scope *env, struct progm *prog, struct list *lp,
 }
 
 enum type
-compile_if(struct scope *env, struct progm *prog, struct list *lp,
+compile_let(struct scope *env, struct progm *prog, struct vector *lp,
+	    bool tailcall)
+{
+	size_t i;
+	struct vector *args;
+	struct scope scope = {
+		.func_sym = 0,
+		.fdat = NULL,
+		.local_funcs = NULL,
+		.parent = env,
+	};
+
+	args = lp->items[1].v;
+	for (i = 0; i < args->len; i++) {
+	}
+}
+
+enum type
+compile_if(struct scope *env, struct progm *prog, struct vector *lp,
 	   bool tailcall)
 {
 	enum type ret_type;
@@ -248,7 +278,7 @@ compile_if(struct scope *env, struct progm *prog, struct list *lp,
 	case Function_type:
 		return Error_type;
 
-	case List_type:
+	case Vector_type:
 	{
 		size_t localtab;
 		size_t offset1, offset2;
@@ -257,12 +287,12 @@ compile_if(struct scope *env, struct progm *prog, struct list *lp,
 		/*
 		 * Todo: optimize here.
 		 */
-		switch (lp->items[1].l->items->sym) {
+		switch (lp->items[1].v->items->sym) {
 		case Equal_builtin:
 			jmp_op = Jmp_ne_opcode;
-			compile_item(env, prog, lp->items[1].l->items + 1,
+			compile_item(env, prog, lp->items[1].v->items + 1,
 				     false);
-			compile_item(env, prog, lp->items[1].l->items + 2,
+			compile_item(env, prog, lp->items[1].v->items + 2,
 				     false);
 			break;
 
@@ -294,7 +324,7 @@ compile_if(struct scope *env, struct progm *prog, struct list *lp,
 
 		/* Conditional test. */
 		code_inst(prog, jmp_op);
-		offset1 = code_si(prog, 0);
+		offset1 = code_offset(prog, 0);
 
 		/* True body. */
 		code_inst(prog, Let_opcode);
@@ -306,8 +336,8 @@ compile_if(struct scope *env, struct progm *prog, struct list *lp,
 			free(scope.locals);
 		code_inst(prog, Yield_opcode);
 		code_inst(prog, Jmp_opcode);
-		offset2 = code_si(prog, 0);
-		prog->code[offset1].o = offset2 - offset1;
+		offset2 = code_offset(prog, 0);
+		prog->code[offset1].o = offset2 + 1;
 
 		/* False body. */
 		scope.locals = malloc(sizeof(symtab));
@@ -320,7 +350,7 @@ compile_if(struct scope *env, struct progm *prog, struct list *lp,
 		else
 			free(scope.locals);
 		offset1 = code_inst(prog, Yield_opcode);
-		prog->code[offset2].o = offset1 - offset2;
+		prog->code[offset2].o = offset1 + 1;
 		return ret_type;
 	}
 
@@ -331,7 +361,7 @@ compile_if(struct scope *env, struct progm *prog, struct list *lp,
 }
 
 enum type
-compile_set(struct scope *env, struct progm *prog, struct list *lp)
+compile_set(struct scope *env, struct progm *prog, struct vector *lp)
 {
 	enum type ret_val;
 
@@ -367,7 +397,7 @@ compile_set(struct scope *env, struct progm *prog, struct list *lp)
 }
 
 enum type
-compile_funcall(struct scope *env, struct progm *prog, struct list *lp,
+compile_funcall(struct scope *env, struct progm *prog, struct vector *lp,
 		bool tailcall)
 {
 	size_t i;
@@ -384,7 +414,7 @@ compile_funcall(struct scope *env, struct progm *prog, struct list *lp,
 	 * Compile the function call.
 	 */
 	switch (lp->items->type) {
-	case List_type:
+	case Vector_type:
 		if (compile_item(env, prog, lp->items, false) == Error_type) {
 			return Error_type;
 		}
@@ -399,19 +429,17 @@ compile_funcall(struct scope *env, struct progm *prog, struct list *lp,
 		struct var_loc loc = find_var_loc(env, lp->items->sym);
 
 		/*
-		 * Determine if the call is a tail call. This is quite a doozy
-		 * and should be simplified/fixed.
+		 * Determine if the call is recursive.
+		 * First, ignore any anonymous scopes created by let or control
+		 * flow.
 		 */
-		if (tailcall) {
-			/*
-			 * Ignore any anonymous scopes created by let or control 
-			 * flow.
-			 */
-			for (ascopes = 0, curr = env;
-			     curr != NULL && curr->fdat == NULL;
-			     curr = curr->parent, ascopes++)
-				;
-			if (curr != NULL && curr->func_sym == lp->items->sym) {
+		for (ascopes = 0, curr = env;
+		     curr != NULL && curr->fdat == NULL;
+		     curr = curr->parent, ascopes++)
+			;
+		if (curr != NULL && curr->func_sym == lp->items->sym) {
+			/* We have found a recursive call. */
+			if (tailcall) {
 				/* We have found a tail call. */
 				/* Produce yields for the anonymous scopes. */
 				while (ascopes > 0) {
@@ -422,17 +450,13 @@ compile_funcall(struct scope *env, struct progm *prog, struct list *lp,
 					code_inst(prog, Sto_imm_local_opcode);
 					code_offset(prog, lp->len - i - 2);
 				}
-				code_inst(prog, Jmp_abs_opcode);
+				code_inst(prog, Jmp_opcode);
 				code_offset(prog, 0);
-				break;
+			} else {
+				code_inst(prog, Call_current_opcode);
+				code_offset(prog, lp->len - 1);
 			}
-			/*
-			 * We have not found a tail call. Continue along normal
-			 * compilation paths.
-			 */
-		}
-
-		if (loc.scope == NULL) {
+		} else if (loc.scope == NULL) {
 			/* Could not find the symbol. */
 			code_inst(prog, Call_imm_sym_opcode);
 			code_offset(prog, lp->len - 1);
@@ -497,8 +521,8 @@ compile_item(struct scope *env, struct progm *prog, struct value *vp,
 		return Integer_type;
 	}
 
-	case List_type:
-		return compile_list(env, prog, vp->l, tailcall);
+	case Vector_type:
+		return compile_vector(env, prog, vp->v, tailcall);
 
 	default:
 		/* WTF?? */
@@ -508,7 +532,7 @@ compile_item(struct scope *env, struct progm *prog, struct value *vp,
 }
 
 enum type
-compile_define(struct scope *env, struct progm *prog, struct list *lp)
+compile_define(struct scope *env, struct progm *prog, struct vector *lp)
 {
 	switch (lp->len) {
 		/* len cannot be zero, first element is 'define' sym. */
@@ -520,7 +544,7 @@ compile_define(struct scope *env, struct progm *prog, struct list *lp)
 		return Error_type;
 
 	default: /* lp->len > 3 */
-		if (lp->items[1].type != List_type) {
+		if (lp->items[1].type != Vector_type) {
 			/* ERROR: multiple values for non function defintion. */
 			return Error_type;
 		}
@@ -544,7 +568,7 @@ compile_define(struct scope *env, struct progm *prog, struct list *lp)
 			 */
 			return compile_var_def(env, prog, lp);
 
-		case List_type:
+		case Vector_type:
 			/*
 			 * Define a function.
 			 */
@@ -557,7 +581,7 @@ compile_define(struct scope *env, struct progm *prog, struct list *lp)
 }
 
 enum type
-compile_var_def(struct scope *env, struct progm *prog, struct list *lp)
+compile_var_def(struct scope *env, struct progm *prog, struct vector *lp)
 {
 	size_t offset;
 	enum type expr_res;
@@ -572,8 +596,8 @@ compile_var_def(struct scope *env, struct progm *prog, struct list *lp)
 	*/
 
 	switch (lp->items[2].type) {
-	case List_type:
-		expr_res = compile_list(env, prog, lp->items[2].l, false);
+	case Vector_type:
+		expr_res = compile_vector(env, prog, lp->items[2].v, false);
 		if (expr_res == Nil_type)
 			/*
 			 * ERROR: expression in definiation must return some
@@ -598,11 +622,11 @@ compile_var_def(struct scope *env, struct progm *prog, struct list *lp)
 }
 
 enum type
-compile_lambda(struct scope *env, struct progm *prog, struct list *lp)
+compile_lambda(struct scope *env, struct progm *prog, struct vector *lp)
 {
 	size_t i;
 	int variadic;
-	struct list *p;
+	struct vector *p;
 	enum type ret_type;
 	struct func *lambda;
 	struct scope lambda_scope;
@@ -620,7 +644,7 @@ compile_lambda(struct scope *env, struct progm *prog, struct list *lp)
 	/*
 	 * Add the arguments
 	 */
-	p = lp->items[1].l;
+	p = lp->items[1].v;
 	for (i = 0; i < p->len; i++)
 		if (p->items[i].sym == Dot_builtin) {
 			variadic = 1;
@@ -658,20 +682,20 @@ compile_lambda(struct scope *env, struct progm *prog, struct list *lp)
 }
 
 enum type
-compile_func_def(struct scope *env, struct progm *prog, struct list *lp)
+compile_func_def(struct scope *env, struct progm *prog, struct vector *lp)
 {
 	int variadic;
 	size_t i;
 	size_t offset;
 	enum type ret_type;
-	struct list *p;
-	struct list *args;
-//	struct list *body;
+	struct vector *p;
+	struct vector *args;
+//	struct vector *body;
 	struct func *new_func;
 //	struct value local_form;
 	struct scope new_scope;
 
-	p = lp->items[1].l;
+	p = lp->items[1].v;
 	if (sym_exists(env->locals, p->items[0].sym)) {
 		/* ERROR: cannot redefine functions? */
 		return Error_type;
@@ -683,12 +707,12 @@ compile_func_def(struct scope *env, struct progm *prog, struct list *lp)
 	new_scope.parent = env;
 	new_scope.locals = malloc(sizeof(symtab));
 	symtab_init(new_scope.locals);
-	args = alloc_list(&global_heap, p->len - 1);
+	args = alloc_vector(&global_heap, p->len - 1);
 	variadic = 0;
 	for (i = 1; i < p->len; i++)
 		/*
 		 * The parser should have discovered most errors in the argument
-		 * list. We can safely assume that every entry is a symbol, at
+		 * vector. We can safely assume that every entry is a symbol, at
 		 * most only one is the '.' symbol, and if the dot symbol does
 		 * exist it is not the last entry.
 		 */
@@ -699,7 +723,7 @@ compile_func_def(struct scope *env, struct progm *prog, struct list *lp)
 			 * We cannot assume that there are no duplicate entries, 
 			 * however.
 			 */
-			/* ERROR: duplicate entries in argument list. */
+			/* ERROR: duplicate entries in argument vector. */
 			free(args);
 			free(new_func);
 			free(new_scope.locals);

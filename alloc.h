@@ -23,25 +23,27 @@ struct heap_item {
 // This is a bad idea; Do fix.
 extern struct heap_item global_heap_start, *global_heap;
 
-struct list;
+struct vector;
 struct slice;
 struct func;
 struct value;
 
+struct value *alloc_value(struct heap_item **);
 struct func *alloc_func(struct heap_item **);
-struct list *alloc_list(struct heap_item **, size_t min_cap);
+struct pair *alloc_pair(struct heap_item **);
+struct vector *alloc_vector(struct heap_item **, size_t min_cap);
 struct slice *alloc_slice(struct heap_item **);
 
 void clear_heap(struct heap_item *curr_item);
 
-void make_nonlocal(struct heap_item **, void *, size_t);
-struct heap_item *mark_heap(struct heap_item **, struct value);
+void make_nonlocal(struct heap_item *, void *, size_t);
+struct heap_item *mark_heap(struct heap_item *, struct value);
 
 static inline bool
 is_heap_allocated(struct value v)
 {
-	return v.type == List_type || v.type == Slice_type ||
-		v.type == Function_type;
+	return v.type == Vector_type || v.type == Pair_type ||
+		v.type == Slice_type ||	v.type == Function_type;
 }
 
 #endif
